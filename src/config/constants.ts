@@ -22,8 +22,15 @@ export const TIME = {
 } as const;
 
 export const PHYSICS = {
-  /** px/s². Matter works in px/step², converted in PhysicsWorld. */
-  gravity: 1200,
+  /**
+   * px/s². Matter works in px/step², converted in PhysicsWorld.
+   *
+   * Ballistic range is `v^2 / g`, so gravity is scaled by the square of the
+   * factor applied to launch speed. That slows the arrow visibly without
+   * shortening its reach — otherwise the widest arenas become unshootable and
+   * the arena generator quietly stops producing them.
+   */
+  gravity: 870,
   /** Matter position/velocity solver iterations. */
   positionIterations: 8,
   velocityIterations: 8,
@@ -51,8 +58,8 @@ export const COMBAT = {
 export const BOW = {
   /** Seconds of holding to reach full charge. */
   timeToMaxCharge: 1.0,
-  minLaunchSpeed: 600,
-  maxLaunchSpeed: 1300,
+  minLaunchSpeed: 510,
+  maxLaunchSpeed: 1105,
   /** Charge is eased before mapping to speed: speed = min + (max-min) * t^exp. */
   chargeEase: 1.35,
   reloadDelayMs: 350,
@@ -68,8 +75,8 @@ export const BOW = {
 } as const;
 
 export const PROJECTILE = {
-  length: 42,
-  thickness: 3,
+  length: 50,
+  thickness: 3.6,
   /** ms after launch during which the shooter cannot be hit by its own arrow. */
   shooterGraceMs: 100,
   /** ms an embedded arrow stays before cleanup. */
