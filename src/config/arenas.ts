@@ -20,19 +20,27 @@ const rangeOf = (rng: () => number, min: number, max: number) => min + rng() * (
  * ------------------------------------------------------------------ */
 
 const ARRANGEMENT = {
-  /** Platform surface centres are drawn from these bands. */
-  leftX: { min: 165, max: 330 },
-  rightX: { min: 950, max: 1115 },
-  topY: { min: 300, max: 500 },
-  width: { min: 130, max: 205 },
+  /**
+   * Platform surface centres are drawn from these bands. They are deliberately
+   * wide: the duel should sometimes be a close-range exchange and sometimes a
+   * long lob, and one archer should sometimes hold the high ground.
+   */
+  leftX: { min: 130, max: 430 },
+  rightX: { min: 850, max: 1150 },
+  topY: { min: 265, max: 535 },
+  width: { min: 125, max: 205 },
   /** Horizontal gap between the two standing surfaces. */
-  minSeparation: 560,
-  maxSeparation: 900,
-  /** Cap the height difference so neither archer is off-screen or unreachable. */
-  maxHeightDelta: 165,
+  minSeparation: 460,
+  maxSeparation: 940,
+  /**
+   * Cap the height difference so neither archer is off-screen, and so the
+   * uphill shot stays inside the bow's reach — `trajectoryIsViable` checks the
+   * actual ballistics, this is the coarse guard.
+   */
+  maxHeightDelta: 240,
   /** Keep both fighters clear of the top and bottom of the frame. */
-  minTopY: 260,
-  maxTopY: 545,
+  minTopY: 250,
+  maxTopY: 555,
 };
 
 export interface Arrangement {

@@ -20,7 +20,7 @@ export function ArcherMark({ side, flip = false }: { side: Side; flip?: boolean 
         d="M44 22 Q60 48 44 74"
         fill="none"
         stroke={s.bow}
-        strokeWidth="5"
+        strokeWidth="6"
         strokeLinecap="round"
       />
       <path d="M44 22 L38 48 L44 74" fill="none" stroke="#ffffff" strokeWidth="1.6" opacity="0.85" />
@@ -33,16 +33,16 @@ export function ArcherMark({ side, flip = false }: { side: Side; flip?: boolean 
 
       {/* torso */}
       <rect x="22" y="34" width="16" height="30" rx="8" fill={s.cloth} />
-      <rect x="22" y="46" width="16" height="5" rx="2.5" fill={s.accent} />
+      <rect x="21.5" y="47" width="17" height="6" rx="3" fill={s.accent} />
 
       {/* arms */}
       <path d="M30 40 L44 46" stroke={s.skinShade} strokeWidth="7" strokeLinecap="round" />
       <path d="M30 40 L42 48" stroke={s.skin} strokeWidth="7" strokeLinecap="round" />
 
       {/* head */}
-      <circle cx="29" cy="24" r="11" fill={s.skin} />
+      <circle cx="29" cy="24" r="11" fill={s.face} />
       <path
-        d="M18 22 l3 -12 4 8 3 -12 4 11 4 -9 3 12 z"
+        d="M17 24 l1 -13 4 8 2 -14 5 11 4 -10 4 13 z"
         fill={s.hair}
       />
       <circle cx="33" cy="24" r="2.1" fill="#12203a" />

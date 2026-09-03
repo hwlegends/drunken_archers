@@ -62,8 +62,9 @@ export const BOW = {
   nockOffset: 21,
   /** Visual: how far the string is pulled back at full charge. */
   maxStringPull: 24,
-  /** Bow limb half-length. */
-  limbLength: 30,
+  /** Bow limb half-length. The bow is deliberately large — it reads as most of
+   * the archer's height, which is what gives the silhouette its character. */
+  limbLength: 42,
 } as const;
 
 export const PROJECTILE = {
@@ -249,6 +250,8 @@ export const CATEGORY = {
 /** A character palette. All artwork is drawn from these, never from a sprite. */
 export interface Skin {
   name: string;
+  /** Face colour. Kept distinct from `skin` so the head reads against the suit. */
+  face: string;
   skin: string;
   skinShade: string;
   cloth: string;
@@ -266,24 +269,26 @@ export interface Skin {
 export const SKINS: Record<'left' | 'right', Skin> = {
   left: {
     name: 'Cobalt',
-    skin: '#5aa9ff',
-    skinShade: '#2e78d4',
-    cloth: '#1f3f9e',
-    clothShade: '#152c73',
-    accent: '#ffd94a',
-    hair: '#16214a',
-    bow: '#8f5a2c',
+    face: '#c9d4f2',
+    skin: '#5a72e0',
+    skinShade: '#4257bd',
+    cloth: '#2f43c4',
+    clothShade: '#22318f',
+    accent: '#f5c542',
+    hair: '#161b36',
+    bow: '#e3aa2e',
     hud: '#4d9dff',
   },
   right: {
     name: 'Ember',
-    skin: '#ffb46b',
-    skinShade: '#e0813a',
+    face: '#ffe2c4',
+    skin: '#f2803c',
+    skinShade: '#cc5f22',
     cloth: '#e2452a',
     clothShade: '#a52d18',
-    accent: '#ffe27a',
+    accent: '#ffd75e',
     hair: '#ffd53d',
-    bow: '#6f4326',
+    bow: '#e3aa2e',
     hud: '#ff7a45',
   },
 };
@@ -293,35 +298,38 @@ export const DEATHMATCH_SKINS: Skin[] = [
   SKINS.right,
   {
     name: 'Verdant',
+    face: '#eaf7d0',
     skin: '#b6e88a',
     skinShade: '#7cb84f',
     cloth: '#2f7d3d',
     clothShade: '#1d5528',
     accent: '#f2ff9c',
     hair: '#123a1c',
-    bow: '#6f4326',
+    bow: '#e3aa2e',
     hud: '#7ddc6a',
   },
   {
     name: 'Amethyst',
+    face: '#f2ddff',
     skin: '#d9a8ff',
     skinShade: '#a06cd0',
     cloth: '#6a2fa0',
     clothShade: '#441a6d',
     accent: '#ffd7f5',
     hair: '#2a1040',
-    bow: '#5c3a5e',
+    bow: '#e3aa2e',
     hud: '#c07dff',
   },
   {
     name: 'Bone',
+    face: '#fbf3e4',
     skin: '#f2e5d0',
     skinShade: '#c9b394',
     cloth: '#7d7266',
     clothShade: '#524a41',
     accent: '#ffbf5e',
     hair: '#3a332c',
-    bow: '#5a4632',
+    bow: '#e3aa2e',
     hud: '#e8d5b4',
   },
 ];

@@ -394,6 +394,7 @@ export class Renderer {
       this.drawLimb(ctx, body, plugin.w, plugin.h, fill);
     }
 
+    this.drawBelt(ctx, r, skin);
     this.drawNeck(ctx, r, skin);
     this.drawHead(ctx, r, skin);
     this.drawBow(ctx, r, skin, bow);
@@ -412,6 +413,19 @@ export class Renderer {
     ctx.rotate(body.angle);
     ctx.fillStyle = fill;
     this.roundedRect(ctx, -w / 2, -h / 2, w, h, Math.min(w, h) * 0.45);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** The sash at the waist, drawn across the lower torso. */
+  private drawBelt(ctx: CanvasRenderingContext2D, r: RagdollHandle, skin: Skin): void {
+    const torso = r.torso;
+    ctx.save();
+    ctx.translate(torso.position.x, torso.position.y);
+    ctx.rotate(torso.angle);
+    ctx.fillStyle = skin.accent;
+    const w = RAGDOLL.torso.w * 1.04;
+    this.roundedRect(ctx, -w / 2, RAGDOLL.torso.h * 0.22, w, RAGDOLL.torso.h * 0.15, 2.5);
     ctx.fill();
     ctx.restore();
   }
@@ -441,47 +455,66 @@ export class Renderer {
   private drawHead(ctx: CanvasRenderingContext2D, r: RagdollHandle, skin: Skin): void {
     const head = r.head;
     const rad = RAGDOLL.head.r;
+
     ctx.save();
     ctx.translate(head.position.x, head.position.y);
     ctx.rotate(head.angle);
+    // Mirror in the head's own frame so everything below can be drawn as if the
+    // archer faces right.
+    ctx.scale(r.facing, 1);
 
-    ctx.fillStyle = skin.skin;
+    // Face.
+    ctx.fillStyle = skin.face;
     ctx.beginPath();
     ctx.arc(0, 0, rad, 0, Math.PI * 2);
     ctx.fill();
 
-    // Spiked hair — original silhouette, drawn as a fan of triangles.
+    /**
+     * Hair: a heavy cap over the crown that sweeps back into long spikes.
+     *
+     * Angles here are canvas angles with the archer facing +X, so 0 is forward,
+     * -PI/2 is straight up and -PI is behind. The fan is deliberately bounded to
+     * the crown and the back — running it any further round wraps the spikes
+     * across the face and the head reads as a spiky ball with no features.
+     */
+    const FRONT = -Math.PI * 0.32;
+    const BACK = -Math.PI * 1.16;
+
     ctx.fillStyle = skin.hair;
     ctx.beginPath();
-    for (let i = 0; i < 7; i++) {
-      const a = -Math.PI * 0.95 + (i / 6) * Math.PI * 0.95;
-      const inner = rad * 0.92;
-      const outer = rad * (1.55 + (i % 2) * 0.35);
-      ctx.moveTo(Math.cos(a - 0.16) * inner, Math.sin(a - 0.16) * inner);
-      ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer);
-      ctx.lineTo(Math.cos(a + 0.16) * inner, Math.sin(a + 0.16) * inner);
-    }
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(0, -rad * 0.25, rad * 0.95, Math.PI, Math.PI * 2);
+    ctx.arc(-rad * 0.12, -rad * 0.12, rad * 1.04, BACK, FRONT);
+    ctx.closePath();
     ctx.fill();
 
-    // A single eye facing the enemy reads clearly at this size.
-    const f = r.facing;
+    const spikes = 8;
+    ctx.beginPath();
+    for (let i = 0; i < spikes; i++) {
+      const t = i / (spikes - 1);
+      const a = FRONT + (BACK - FRONT) * t;
+      // Spikes lengthen toward the back, with shorter ones alternating between.
+      const reach = rad * (1.2 + t * 1.25 + (i % 2 === 0 ? 0.28 : 0));
+      const spread = 0.19;
+      ctx.moveTo(Math.cos(a - spread) * rad * 0.92, Math.sin(a - spread) * rad * 0.92);
+      ctx.lineTo(Math.cos(a) * reach, Math.sin(a) * reach);
+      ctx.lineTo(Math.cos(a + spread) * rad * 0.92, Math.sin(a + spread) * rad * 0.92);
+    }
+    ctx.fill();
+
+    // A single eye reads clearly at this size.
     ctx.fillStyle = '#12203a';
     if (r.dead) {
       ctx.strokeStyle = '#12203a';
-      ctx.lineWidth = 2;
-      const ex = f * rad * 0.34;
+      ctx.lineWidth = 2.2;
+      const ex = rad * 0.38;
       ctx.beginPath();
-      ctx.moveTo(ex - 3, -3);
-      ctx.lineTo(ex + 3, 3);
-      ctx.moveTo(ex + 3, -3);
-      ctx.lineTo(ex - 3, 3);
+      ctx.moveTo(ex - 3.5, -3.5);
+      ctx.lineTo(ex + 3.5, 3.5);
+      ctx.moveTo(ex + 3.5, -3.5);
+      ctx.lineTo(ex - 3.5, 3.5);
       ctx.stroke();
     } else {
       ctx.beginPath();
-      ctx.ellipse(f * rad * 0.34, 0, 2.1, 3.1, 0, 0, Math.PI * 2);
+      ctx.ellipse(rad * 0.38, 0.5, 2.4, 3.6, 0, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
@@ -507,7 +540,7 @@ export class Renderer {
     // Limbs — a C flexing away from the archer as the draw deepens.
     const flex = 1 + charge * 0.28;
     ctx.strokeStyle = skin.bow;
-    ctx.lineWidth = 4.2;
+    ctx.lineWidth = 5.4;
     ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(-2, -limb);
@@ -517,16 +550,16 @@ export class Renderer {
 
     // Grip.
     ctx.strokeStyle = skin.accent;
-    ctx.lineWidth = 5.5;
+    ctx.lineWidth = 7;
     ctx.beginPath();
-    ctx.moveTo(9.4 * flex, -5);
-    ctx.lineTo(9.4 * flex, 5);
+    ctx.moveTo(9.4 * flex, -7);
+    ctx.lineTo(9.4 * flex, 7);
     ctx.stroke();
 
     // String, pulled back toward the draw hand.
     const nockX = -2 - pull;
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-    ctx.lineWidth = 1.3;
+    ctx.lineWidth = 1.7;
     ctx.beginPath();
     ctx.moveTo(-2, -limb);
     ctx.lineTo(nockX, 0);
