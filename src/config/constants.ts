@@ -149,10 +149,12 @@ export const RAGDOLL = {
   toppleRecoveryPerSecond: 0.5,
 
   /**
-   * The bow arm rides this far above horizontal at rest, which lifts the bow up
-   * in front of the archer's face instead of leaving it down at the waist.
+   * The bow arm rides this far above horizontal at rest, holding the bow up in
+   * front of the archer's chest and face. Kept low enough that the forearm never
+   * sits across the head: combined with `neckGap`, shots aimed at the head reach
+   * it rather than being intercepted by the arm.
    */
-  armLift: 0.26,
+  armLift: 0.18,
   /**
    * The arm sweeps this far either side of its rest lift. This is the swing the
    * player is timing — the bow angle at release is the shot direction, so a
