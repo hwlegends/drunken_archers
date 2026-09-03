@@ -133,11 +133,22 @@ export interface RagdollHandle {
   constraints: Matter.Constraint[];
   /** Soft constraint holding the character upright over its feet. */
   balance: Matter.Constraint | null;
+  /** Rest position of the balance anchor; the sway drifts around this. */
+  balanceAnchor: Vec2;
+  /**
+   * Pull the bow elbow and hand toward moving points. Targeting both joints
+   * fully determines the arm pose, so the elbow cannot flip between the two
+   * solutions a single hand target would leave ambiguous.
+   */
+  aim: Matter.Constraint | null;
+  aimElbow: Matter.Constraint | null;
   collisionGroup: number;
   /** Per-part damage region lookup, keyed by Matter body id. */
   regionOf: Map<number, BodyRegion>;
   /** Wobble phase so each archer sways on its own rhythm. */
   wobblePhase: number;
+  /** Independent phase for the bow arm's up-and-down sweep. */
+  armPhase: number;
   wobbleSeed: number;
   dead: boolean;
 }

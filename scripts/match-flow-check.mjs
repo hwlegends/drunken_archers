@@ -81,6 +81,23 @@ const clickBtn = (page, text) =>
     return !!b;
   }, text);
 
+/**
+ * Returns to the menu from wherever we are. A match still in play has no Home
+ * button, so it has to be paused first — and pausing is only legal from
+ * `playing`, so that may take a few attempts across a round transition.
+ */
+async function goHome(page) {
+  for (let i = 0; i < 30; i++) {
+    if (await clickBtn(page, 'Home')) {
+      await wait(400);
+      if (await page.$('.menu')) return true;
+    }
+    await page.keyboard.press('Escape');
+    await wait(400);
+  }
+  return false;
+}
+
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 720 });
@@ -144,18 +161,12 @@ try {
 
   /* ---- deathmatch defeat + best-score persistence ---------------- */
   console.log('\nDeathmatch (idle player, run should end in defeat):');
-  await page.evaluate(() => {
-    const b = [...document.querySelectorAll('.hud__pause')][0];
-    if (b) b.click();
-  });
-  await wait(600);
-  await clickBtn(page, 'Home');
-  await page.waitForSelector('.menu', { timeout: 8000 });
+  note(await goHome(page), 'can leave a match for the menu');
   await clickBtn(page, 'Deathmatch');
   await page.waitForSelector('canvas', { timeout: 5000 });
 
   let dmResult = null;
-  const dmDeadline = Date.now() + 3 * 60 * 1000;
+  const dmDeadline = Date.now() + 5 * 60 * 1000;
   while (Date.now() < dmDeadline) {
     await wait(1500);
     const title = await page.evaluate(() => {
@@ -178,7 +189,7 @@ try {
   }
 
   /* ---- settings persistence -------------------------------------- */
-  await clickBtn(page, 'Home');
+  await goHome(page);
   await page.waitForSelector('.menu', { timeout: 8000 });
   await page.evaluate(() => {
     [...document.querySelectorAll('.toggle')].find((t) => t.textContent.includes('Music')).click();

@@ -47,7 +47,7 @@ src/
                 arenas.ts      three themes + platform generation and validation
   game/         PhysicsWorld   Matter engine, fixed timestep, px/s <-> px/step units
                 RagdollFactory eleven jointed bodies plus a bow, per fighter
-                SwayController the drunkenness: sway torque, upright recovery, jitter
+                SwayController the drunkenness: body sway, stance, bow-arm sweep
                 BowController  draw, charge, release, recoil, reload
                 ProjectileSystem arrow flight, embedding, cleanup
                 CombatSystem   the damage pipeline, defeat and scoring
@@ -68,6 +68,14 @@ A few details worth knowing:
   other module touches Matter's raw units.
 - **The bow is welded to the forward hand.** Its angle follows the arm pose, and
   that angle *is* the shot direction. There is no aiming input.
+- **The bow arm is driven positionally, not by a torque servo.** The elbow and
+  hand are each pulled toward a point that orbits the shoulder, and the arm
+  follows. The shoulder is a single pin, so a servo working on a wrapped angle
+  error has an unstable equilibrium at 180 degrees and will wind the arm into a
+  permanent spin; targeting both joints also removes the elbow-flip ambiguity a
+  hand target alone would leave. The sweep carries the bow through roughly
+  -4 to 44 degrees of elevation, across the useful 10-35 degree firing band —
+  that crossing is what the player times.
 - **The CPU plays by the same rules.** It solves a ballistic launch angle for
   its current charge, waits for the wobble to line up, and releases the string.
   It never teleports a projectile or sets an impact point.

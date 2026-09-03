@@ -21,6 +21,12 @@ export const toStepVelocity = (pxPerSecond: number): number => pxPerSecond / STE
 /** Matter px/step -> px/s */
 export const toSecondVelocity = (pxPerStep: number): number => pxPerStep * STEPS_PER_SECOND;
 
+/**
+ * The force Matter adds to a body each step as gravity, per unit of mass.
+ * Applying its negative exactly cancels gravity for that body.
+ */
+export const GRAVITY_FORCE_PER_MASS = (PHYSICS.gravity / (GRAVITY_SCALE * 1e6)) * GRAVITY_SCALE;
+
 /** Speed of a body in px/s. */
 export function bodySpeed(body: Matter.Body): number {
   return toSecondVelocity(Math.hypot(body.velocity.x, body.velocity.y));

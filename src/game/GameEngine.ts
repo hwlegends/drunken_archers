@@ -124,7 +124,9 @@ export class GameEngine {
     this.roundOver = false;
     this.deathmatchScore = 0;
     this.encounter = 0;
-    this.cpuDifficulty = mode === 'deathmatch' ? AI.minDifficulty + 0.1 : 0.42;
+    // A moving bow made every shot harder, so the CPU baseline comes up to keep
+    // rounds brisk. Deathmatch still opens gently and ramps from there.
+    this.cpuDifficulty = mode === 'deathmatch' ? 0.3 : 0.55;
 
     const controllers: Record<Side, PlayerState['controller']> =
       mode === 'twoPlayers'

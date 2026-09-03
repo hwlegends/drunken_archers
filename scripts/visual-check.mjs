@@ -172,7 +172,7 @@ try {
 
   let score = await readScore();
   let sawDamage = false;
-  for (let i = 0; i < 90 && score === '0:0'; i++) {
+  for (let i = 0; i < 150 && score === '0:0'; i++) {
     await page.keyboard.down('ArrowUp');
     await wait(120 + (i % 5) * 180);
     await page.keyboard.up('ArrowUp');

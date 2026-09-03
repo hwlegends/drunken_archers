@@ -108,15 +108,34 @@ export class RagdollFactory {
     /* ---- arms ---------------------------------------------------- */
 
     const shoulderY = y - RAGDOLL.torso.h + 5;
-    const forwardAngle = -f * Math.PI * 0.5;
 
-    // Front arm holds the bow, extended toward the enemy.
-    const armFrontUpper = limb('upperArmFront', 'upperArm', x + f * (RAGDOLL.upperArm.h / 2 + 3), shoulderY, RAGDOLL.upperArm.w, RAGDOLL.upperArm.h, forwardAngle);
-    const armFrontLower = limb('lowerArmFront', 'lowerArm', x + f * (RAGDOLL.upperArm.h + RAGDOLL.lowerArm.h / 2 + 3), shoulderY, RAGDOLL.lowerArm.w, RAGDOLL.lowerArm.h, forwardAngle);
+    /**
+     * A limb's long axis is local +Y, so an angle of `-f * (PI/2 + lift)` points
+     * it forward and `lift` radians above horizontal. Raising the bow arm this
+     * way carries the hand up to head height, which is what puts the bow in
+     * front of the archer's face rather than down by the waist.
+     */
+    const armAngle = (lift: number) => -f * (Math.PI / 2 + lift);
+    const along = (angle: number, distance: number) => ({
+      x: -Math.sin(angle) * distance,
+      y: Math.cos(angle) * distance,
+    });
+
+    const frontAngle = armAngle(RAGDOLL.armLift);
+    const shoulderFront = { x: x + f * 3, y: shoulderY };
+    const upperMid = along(frontAngle, RAGDOLL.upperArm.h / 2);
+    const lowerMid = along(frontAngle, RAGDOLL.upperArm.h + RAGDOLL.lowerArm.h / 2);
+
+    // Front arm holds the bow, raised toward the enemy.
+    const armFrontUpper = limb('upperArmFront', 'upperArm', shoulderFront.x + upperMid.x, shoulderFront.y + upperMid.y, RAGDOLL.upperArm.w, RAGDOLL.upperArm.h, frontAngle);
+    const armFrontLower = limb('lowerArmFront', 'lowerArm', shoulderFront.x + lowerMid.x, shoulderFront.y + lowerMid.y, RAGDOLL.lowerArm.w, RAGDOLL.lowerArm.h, frontAngle);
 
     // Back arm draws the string, bent back toward the jaw.
-    const armBackUpper = limb('upperArmBack', 'upperArm', x + f * (RAGDOLL.upperArm.h / 2 + 1), shoulderY + 3, RAGDOLL.upperArm.w, RAGDOLL.upperArm.h, forwardAngle * 0.75);
-    const armBackLower = limb('lowerArmBack', 'lowerArm', x + f * (RAGDOLL.upperArm.h + 2), shoulderY - RAGDOLL.lowerArm.h / 2 + 4, RAGDOLL.lowerArm.w, RAGDOLL.lowerArm.h, forwardAngle * 0.15);
+    const backAngle = armAngle(RAGDOLL.armLift * 0.7);
+    const shoulderBack = { x: x - f * 2, y: shoulderY + 2 };
+    const backUpperMid = along(backAngle, RAGDOLL.upperArm.h / 2);
+    const armBackUpper = limb('upperArmBack', 'upperArm', shoulderBack.x + backUpperMid.x, shoulderBack.y + backUpperMid.y, RAGDOLL.upperArm.w, RAGDOLL.upperArm.h, backAngle);
+    const armBackLower = limb('lowerArmBack', 'lowerArm', shoulderBack.x + f * (RAGDOLL.upperArm.h + 2), shoulderBack.y - RAGDOLL.lowerArm.h / 2 + 2, RAGDOLL.lowerArm.w, RAGDOLL.lowerArm.h, backAngle * 0.2);
 
     /* ---- bow ----------------------------------------------------- */
 
@@ -179,7 +198,7 @@ export class RagdollFactory {
 
     // Shoulders.
     joint(torso, armFrontUpper, { x: f * 3, y: -halfTorso + 5 }, { x: 0, y: -RAGDOLL.upperArm.h / 2 });
-    joint(torso, armBackUpper, { x: -f * 2, y: -halfTorso + 8 }, { x: 0, y: -RAGDOLL.upperArm.h / 2 });
+    joint(torso, armBackUpper, { x: -f * 2, y: -halfTorso + 7 }, { x: 0, y: -RAGDOLL.upperArm.h / 2 });
     // Elbows.
     joint(armFrontUpper, armFrontLower, { x: 0, y: RAGDOLL.upperArm.h / 2 }, { x: 0, y: -RAGDOLL.lowerArm.h / 2 });
     joint(armBackUpper, armBackLower, { x: 0, y: RAGDOLL.upperArm.h / 2 }, { x: 0, y: -RAGDOLL.lowerArm.h / 2 });
@@ -212,10 +231,49 @@ export class RagdollFactory {
       );
     }
 
+    /**
+     * The aim link. Its anchor is a point in torso-local space out at arm's
+     * length, and the bow hand is pulled to it; the elbow then resolves itself.
+     * SwayController walks this anchor up and down an arc each step, which is
+     * what sweeps the bow through its firing angles.
+     */
+    const aimAnchor = (distance: number, lift: number): Vec2 => ({
+      x: f * (3 + distance * Math.cos(lift)),
+      y: -halfTorso + 5 - distance * Math.sin(lift),
+    });
+
+    const aim = Matter.Constraint.create({
+      bodyA: torso,
+      pointA: aimAnchor(RAGDOLL.aimReach, RAGDOLL.armLift),
+      bodyB: armFrontLower,
+      pointB: { x: 0, y: RAGDOLL.lowerArm.h / 2 },
+      length: 0,
+      stiffness: RAGDOLL.aimStiffness,
+      damping: RAGDOLL.aimDamping,
+      render: { visible: false },
+    });
+    constraints.push(aim);
+
+    // Targeting the elbow as well removes the elbow-up / elbow-down ambiguity
+    // that a hand target alone leaves, which otherwise flips the forearm — and
+    // with it the bow angle — from frame to frame.
+    const aimElbow = Matter.Constraint.create({
+      bodyA: torso,
+      pointA: aimAnchor(RAGDOLL.upperArm.h, RAGDOLL.armLift),
+      bodyB: armFrontUpper,
+      pointB: { x: 0, y: RAGDOLL.upperArm.h / 2 },
+      length: 0,
+      stiffness: RAGDOLL.aimElbowStiffness,
+      damping: RAGDOLL.aimDamping,
+      render: { visible: false },
+    });
+    constraints.push(aimElbow);
+
     // The balance spring: a long, very soft link from the torso to a point high
     // above the spawn. It resists a full topple without stopping the wobble.
+    const balanceAnchor = { x, y: y - 150 };
     const balance = Matter.Constraint.create({
-      pointA: { x, y: y - 150 },
+      pointA: { x: balanceAnchor.x, y: balanceAnchor.y },
       bodyB: torso,
       pointB: { x: 0, y: -halfTorso },
       length: 150 - RAGDOLL.torso.h,
@@ -240,9 +298,13 @@ export class RagdollFactory {
       bodies,
       constraints,
       balance,
+      balanceAnchor,
+      aim,
+      aimElbow,
       collisionGroup: group,
       regionOf,
       wobblePhase: Math.random() * Math.PI * 2,
+      armPhase: Math.random() * Math.PI * 2,
       wobbleSeed: Math.random() * 1000,
       dead: false,
     };

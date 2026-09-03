@@ -109,6 +109,13 @@ export const RAGDOLL = {
   uprightTorque: 0.0007,
   /** Angular drag on the torso so it never spins up. */
   uprightDamping: 0.009,
+  /**
+   * A gentler version of the upright pair, applied to the legs. Without it the
+   * whole body pivots about the pinned ankles and the archer reads as lunging
+   * or doubled over rather than standing and rocking.
+   */
+  legUprightTorque: 0.00045,
+  legUprightDamping: 0.007,
   /** Alternating torso torque — this is the drunken sway. */
   swayTorque: 0.0085,
   /** Sway oscillation period, seconds. */
@@ -117,8 +124,44 @@ export const RAGDOLL = {
   jitterImpulse: 0.00042,
   /** Mean ms between random jitter impulses. */
   jitterIntervalMs: 420,
-  /** Torque holding the bow arm out toward the enemy. */
-  aimTorque: 0.0042,
+
+  /**
+   * The bow arm rides this far above horizontal at rest, which lifts the bow up
+   * in front of the archer's face instead of leaving it down at the waist.
+   */
+  armLift: 0.36,
+  /**
+   * The arm sweeps this far either side of its rest lift. This is the swing the
+   * player is timing — the bow angle at release is the shot direction, so a
+   * still arm would mean a game with no skill in it.
+   */
+  armSwingAmplitude: 0.30,
+  /** Arm swing period, seconds. Deliberately not a ratio of `swayPeriod`. */
+  armSwingPeriod: 1.55,
+  /** A second, detuned swing so the sweep never repeats exactly. */
+  armSwingWobble: 0.12,
+  armSwingWobbleRatio: 0.57,
+  /**
+   * The bow hand is pulled toward a target point that orbits the shoulder, and
+   * the two-link arm follows. This is deliberately positional rather than a
+   * torque servo: the shoulder is a single pin, so a servo working on a wrapped
+   * angle error has an unstable equilibrium at 180 degrees and will wind the
+   * arm into a permanent spin. A point target cannot wind up.
+   */
+  aimStiffness: 0.075,
+  aimDamping: 0.14,
+  /** The elbow link is softer, so the arm still gives when it is hit. */
+  aimElbowStiffness: 0.05,
+  /** Shoulder-to-hand distance of the target, just inside full extension. */
+  aimReach: 37,
+
+  /**
+   * The balance anchor wanders on a Lissajous path. Two different periods make
+   * the body lean and bob through a 2D figure rather than sliding along one
+   * left-right line.
+   */
+  balanceDrift: { x: 12, y: 11 },
+  balanceDriftPeriod: { x: 3.3, y: 2.05 },
 } as const;
 
 export const MATCH = {
