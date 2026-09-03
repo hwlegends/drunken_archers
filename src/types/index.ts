@@ -140,7 +140,9 @@ export interface RagdollHandle {
   /** The point between the feet that the standing body swings about. */
   pivot: Vec2;
   /** Each part's rest placement relative to `pivot`, used to pose the swing. */
-  restPose: Array<{ body: Matter.Body; offset: Vec2; angle: number }>;
+  restPose: Array<{ body: Matter.Body; offset: Vec2; angle: number; isLeg: boolean }>;
+  /** Hip position relative to `pivot`; the upper body leans about this. */
+  hipOffset: Vec2;
   /** True while the archer is on its feet and being posed. */
   standing: boolean;
   /** Accumulated destabilisation from hits; at 1 the archer loses its footing. */
@@ -152,6 +154,10 @@ export interface RagdollHandle {
   wobblePhase: number;
   /** Independent phase for the bow arm's up-and-down sweep. */
   armPhase: number;
+  /** Current and target multipliers on the swing speed, and the drift timer. */
+  swingRate: number;
+  swingRateTarget: number;
+  swingRateTimer: number;
   wobbleSeed: number;
   dead: boolean;
 }

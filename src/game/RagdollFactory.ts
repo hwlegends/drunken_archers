@@ -75,7 +75,7 @@ export class RagdollFactory {
       RAGDOLL.density * 1.5,
     );
 
-    const head = Matter.Bodies.circle(x, y - RAGDOLL.torso.h - RAGDOLL.head.r, RAGDOLL.head.r, {
+    const head = Matter.Bodies.circle(x, y - RAGDOLL.torso.h - RAGDOLL.neckGap - RAGDOLL.head.r, RAGDOLL.head.r, {
       label: side + ':head',
       density: RAGDOLL.density * 0.85,
       friction: RAGDOLL.friction,
@@ -190,8 +190,8 @@ export class RagdollFactory {
     const halfTorso = RAGDOLL.torso.h / 2;
 
     // Neck — two anchors so the head cannot spin freely on its socket.
-    joint(torso, head, { x: 0, y: -halfTorso }, { x: 0, y: RAGDOLL.head.r * 0.7 }, 0.95);
-    joint(torso, head, { x: 0, y: -halfTorso + 4 }, { x: 0, y: RAGDOLL.head.r * 0.95 }, 0.35);
+    joint(torso, head, { x: 0, y: -halfTorso }, { x: 0, y: RAGDOLL.head.r + RAGDOLL.neckGap }, 0.95);
+    joint(torso, head, { x: 0, y: -halfTorso + 4 }, { x: 0, y: RAGDOLL.head.r + RAGDOLL.neckGap + 4 }, 0.35);
 
     // Hips.
     joint(torso, legFront, { x: f * 4, y: halfTorso }, { x: 0, y: -RAGDOLL.upperLeg.h / 2 });
@@ -234,10 +234,15 @@ export class RagdollFactory {
     // The body swings about a point between the feet, so every part's rest
     // placement is recorded relative to it.
     const pivot: Vec2 = { x, y: y + RAGDOLL.upperLeg.h + RAGDOLL.lowerLeg.h };
+    // The hips are one leg-length above the pivot. The legs lean about the
+    // pivot, the upper body about the hips, so the archer bends a little rather
+    // than tipping as one plank.
+    const hipOffset: Vec2 = { x: 0, y: -(RAGDOLL.upperLeg.h + RAGDOLL.lowerLeg.h) };
     const restPose = bodies.map((body) => ({
       body,
       offset: { x: body.position.x - pivot.x, y: body.position.y - pivot.y },
       angle: body.angle,
+      isLeg: getPartPlugin(body).part.includes('Leg'),
     }));
 
     this.physics.add(Matter.Composite.create({ bodies, constraints }));
@@ -257,12 +262,16 @@ export class RagdollFactory {
       joints,
       pivot,
       restPose,
+      hipOffset,
       standing: true,
       balanceLoss: 0,
       collisionGroup: group,
       regionOf,
       wobblePhase: Math.random() * Math.PI * 2,
       armPhase: Math.random() * Math.PI * 2,
+      swingRate: 1,
+      swingRateTarget: 1,
+      swingRateTimer: 0,
       wobbleSeed: Math.random() * 1000,
       dead: false,
     };

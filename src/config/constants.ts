@@ -84,6 +84,12 @@ export const RAGDOLL = {
   /** Torso half-extents in logical px. */
   torso: { w: 18, h: 41 },
   head: { r: 13.5 },
+  /**
+   * Gap between the top of the torso and the bottom of the head. It exists so
+   * the head clears the raised bow arm: without it the forearm sits straight
+   * across the face and intercepts shots aimed at the head.
+   */
+  neckGap: 10,
   upperArm: { w: 8.5, h: 21 },
   lowerArm: { w: 7.5, h: 20 },
   upperLeg: { w: 10.5, h: 24 },
@@ -103,7 +109,22 @@ export const RAGDOLL = {
    * anticipate where the target will be, instead of guessing at loose limbs.
    */
   swingAmplitude: 1.0,
-  swingPeriod: 2.4,
+  swingPeriod: 3.8,
+  /**
+   * The swing speed drifts randomly around its nominal rate, and occasionally
+   * dips negative for a moment so the archer checks and reverses mid-sweep.
+   * Kept small: enough that the timing cannot be memorised, not so much that the
+   * archer's position stops being readable.
+   */
+  swingRateJitter: 0.3,
+  swingRateChangeMs: 1500,
+  swingReverseChance: 0.15,
+  /**
+   * How much of the body's lean the legs take. Below 1 the upper body leans
+   * further than the legs do, so the archer bends slightly at the hips instead
+   * of tipping like a plank.
+   */
+  legShare: 0.84,
   /**
    * Shapes the swing waveform: `sign(sin) * |sin| ** swingShape`.
    *
@@ -131,7 +152,7 @@ export const RAGDOLL = {
    * The bow arm rides this far above horizontal at rest, which lifts the bow up
    * in front of the archer's face instead of leaving it down at the waist.
    */
-  armLift: 0.36,
+  armLift: 0.26,
   /**
    * The arm sweeps this far either side of its rest lift. This is the swing the
    * player is timing — the bow angle at release is the shot direction, so a

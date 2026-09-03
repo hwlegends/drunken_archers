@@ -394,6 +394,7 @@ export class Renderer {
       this.drawLimb(ctx, body, plugin.w, plugin.h, fill);
     }
 
+    this.drawNeck(ctx, r, skin);
     this.drawHead(ctx, r, skin);
     this.drawBow(ctx, r, skin, bow);
     ctx.restore();
@@ -412,6 +413,28 @@ export class Renderer {
     ctx.fillStyle = fill;
     this.roundedRect(ctx, -w / 2, -h / 2, w, h, Math.min(w, h) * 0.45);
     ctx.fill();
+    ctx.restore();
+  }
+
+  /** Bridges the gap that holds the head clear of the raised bow arm. */
+  private drawNeck(ctx: CanvasRenderingContext2D, r: RagdollHandle, skin: Skin): void {
+    const torso = r.torso;
+    const half = RAGDOLL.torso.h / 2;
+    const cos = Math.cos(torso.angle);
+    const sin = Math.sin(torso.angle);
+    const base = {
+      x: torso.position.x + half * sin,
+      y: torso.position.y - half * cos,
+    };
+
+    ctx.save();
+    ctx.strokeStyle = skin.skinShade;
+    ctx.lineWidth = RAGDOLL.torso.w * 0.42;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(base.x, base.y);
+    ctx.lineTo(r.head.position.x, r.head.position.y);
+    ctx.stroke();
     ctx.restore();
   }
 

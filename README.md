@@ -73,7 +73,16 @@ A few details worth knowing:
   bow arm sweeps on top of that. The swing waveform is shaped rather than a plain
   sine (`swingShape`): a sine dwells near its peaks, which at this amplitude
   would leave the archer lying at full lean most of the time instead of
-  staggering through it. Keeping the body rigid is a gameplay decision: a player can
+  staggering through it. Its speed also drifts randomly and occasionally runs
+  backwards for a moment, so the cadence cannot be memorised — full leans come
+  1.7 to 7.2 seconds apart around a nominal 3.8. The legs take slightly less of
+  the lean than the upper body (`legShare`), so the archer folds a little at the
+  hips instead of tipping like a plank.
+- **The head clears the bow arm on purpose.** `neckGap` lifts the head above the
+  raised bow arm. Without it the forearm sits straight across the face and
+  intercepts arrows aimed at the head — measured, it took 10% of head-bound shots
+  and dropped the head-hit share to 82%; with the gap that is 99%. The bow itself
+  never collides with anything, so arrows always pass through it. Keeping the body rigid is a gameplay decision: a player can
   watch the swing and anticipate where the target will be, which loose
   independently-wobbling limbs never allowed. It is also what finally made the
   motion stable — three solver-driven attempts failed first. A torque servo on a

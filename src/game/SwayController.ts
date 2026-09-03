@@ -32,7 +32,20 @@ export class SwayController {
     const dt = stepMs / 1000;
 
     if (handle.standing && !handle.dead) {
-      handle.wobblePhase += (dt / RAGDOLL.swingPeriod) * Math.PI * 2;
+      // The swing speed drifts, and now and then dips negative for a moment so
+      // the archer checks and reverses mid-sweep. Eased rather than stepped, so
+      // it reads as unsteadiness rather than a glitch.
+      handle.swingRateTimer -= stepMs;
+      if (handle.swingRateTimer <= 0) {
+        handle.swingRateTimer = RAGDOLL.swingRateChangeMs * (0.6 + Math.random() * 0.8);
+        handle.swingRateTarget =
+          Math.random() < RAGDOLL.swingReverseChance
+            ? -Math.random() * 0.3
+            : 1 + (Math.random() * 2 - 1) * RAGDOLL.swingRateJitter;
+      }
+      handle.swingRate += (handle.swingRateTarget - handle.swingRate) * Math.min(1, dt * 2.5);
+
+      handle.wobblePhase += (dt / RAGDOLL.swingPeriod) * Math.PI * 2 * handle.swingRate;
       handle.armPhase += (dt / RAGDOLL.armSwingPeriod) * Math.PI * 2;
     }
 
@@ -75,18 +88,41 @@ export class SwayController {
    */
   private poseBody(handle: RagdollHandle): void {
     const theta = this.swingAngle(handle);
-    const cos = Math.cos(theta);
-    const sin = Math.sin(theta);
+    const legTheta = theta * RAGDOLL.legShare;
     const { x: px, y: py } = handle.pivot;
 
-    for (const { body, offset, angle } of handle.restPose) {
-      this.place(
-        body,
-        px + offset.x * cos - offset.y * sin,
-        py + offset.x * sin + offset.y * cos,
-        angle + theta,
-        RAGDOLL.poseTrackRate,
-      );
+    // Legs lean about the feet, the upper body about the hips. The upper body
+    // leans further, so the archer folds slightly at the waist rather than
+    // tipping as one rigid plank.
+    const lc = Math.cos(legTheta);
+    const ls = Math.sin(legTheta);
+    const hip = handle.hipOffset;
+    const hipX = px + hip.x * lc - hip.y * ls;
+    const hipY = py + hip.x * ls + hip.y * lc;
+
+    const bc = Math.cos(theta);
+    const bs = Math.sin(theta);
+
+    for (const { body, offset, angle, isLeg } of handle.restPose) {
+      if (isLeg) {
+        this.place(
+          body,
+          px + offset.x * lc - offset.y * ls,
+          py + offset.x * ls + offset.y * lc,
+          angle + legTheta,
+          RAGDOLL.poseTrackRate,
+        );
+      } else {
+        const ox = offset.x - hip.x;
+        const oy = offset.y - hip.y;
+        this.place(
+          body,
+          hipX + ox * bc - oy * bs,
+          hipY + ox * bs + oy * bc,
+          angle + theta,
+          RAGDOLL.poseTrackRate,
+        );
+      }
     }
   }
 
