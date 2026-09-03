@@ -69,8 +69,11 @@ A few details worth knowing:
 - **The bow is welded to the forward hand.** Its angle follows the arm pose, and
   that angle *is* the shot direction. There is no aiming input.
 - **A standing archer is posed, not solved for.** The body swings as one rigid
-  piece about a pivot between its feet, like a metronome, and the bow arm sweeps
-  on top of that. Keeping the body rigid is a gameplay decision: a player can
+  piece about a pivot between its feet, through a wide ~124 degree arc, and the
+  bow arm sweeps on top of that. The swing waveform is shaped rather than a plain
+  sine (`swingShape`): a sine dwells near its peaks, which at this amplitude
+  would leave the archer lying at full lean most of the time instead of
+  staggering through it. Keeping the body rigid is a gameplay decision: a player can
   watch the swing and anticipate where the target will be, which loose
   independently-wobbling limbs never allowed. It is also what finally made the
   motion stable — three solver-driven attempts failed first. A torque servo on a

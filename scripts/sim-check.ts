@@ -8,7 +8,7 @@
  *   npm run sim-check
  */
 import Matter from 'matter-js';
-import { AI, BOW, COMBAT, MATCH, PHYSICS, PROJECTILE, TIME, VIEW } from '../src/config/constants';
+import { AI, BOW, COMBAT, MATCH, PHYSICS, PROJECTILE, RAGDOLL, TIME, VIEW } from '../src/config/constants';
 import { createArena, generateArrangement, makeRng, validateArrangement } from '../src/config/arenas';
 import { AIController } from '../src/game/AIController';
 import { BowController } from '../src/game/BowController';
@@ -233,11 +233,14 @@ section('3. Body swing');
 
     check(theme + ': both archers stay on their feet for 20s', upright, rig.defeats.length + ' defeats');
 
+    // Bounded against the configured swing rather than a magic number, so the
+    // test stays meaningful when the amplitude is retuned.
     const tiltDeg = (maxTilt * 180) / Math.PI;
+    const configuredDeg = ((RAGDOLL.swingAmplitude + RAGDOLL.swingDetune) * 180) / Math.PI;
     check(
-      theme + ': the body swings visibly without spinning',
-      Number.isFinite(tiltDeg) && tiltDeg > 5 && tiltDeg < 40,
-      'max lean ' + tiltDeg.toFixed(1) + ' deg, torso travel ' + maxSway.toFixed(1) + 'px',
+      theme + ': the body swings its configured arc without spinning',
+      Number.isFinite(tiltDeg) && tiltDeg > configuredDeg * 0.5 && tiltDeg < configuredDeg * 1.25,
+      'max lean ' + tiltDeg.toFixed(1) + ' of a configured ' + configuredDeg.toFixed(1) + ' deg, torso travel ' + maxSway.toFixed(1) + 'px',
     );
     check(
       theme + ': the archer pivots about its feet rather than walking',

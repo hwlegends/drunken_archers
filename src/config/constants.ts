@@ -102,10 +102,20 @@ export const RAGDOLL = {
    * what makes an archer's position readable: a player can watch the swing and
    * anticipate where the target will be, instead of guessing at loose limbs.
    */
-  swingAmplitude: 0.38,
+  swingAmplitude: 1.0,
   swingPeriod: 2.4,
+  /**
+   * Shapes the swing waveform: `sign(sin) * |sin| ** swingShape`.
+   *
+   * A plain sine (1.0) dwells near its peaks, so at a wide amplitude the archer
+   * spends most of its time lying over at full lean rather than swaying. Above
+   * 1 it lingers nearer upright and sweeps briskly through the extremes, which
+   * keeps the full arc while still reading as a stagger. Set to 1 for a pure
+   * sine.
+   */
+  swingShape: 1.35,
   /** A small detuned second swing, so it reads as alive but stays predictable. */
-  swingDetune: 0.07,
+  swingDetune: 0.09,
   swingDetuneRatio: 0.41,
 
   /**

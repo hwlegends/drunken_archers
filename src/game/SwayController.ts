@@ -55,8 +55,14 @@ export class SwayController {
 
   /** The angle this archer is currently leaning at, in radians. */
   swingAngle(handle: RagdollHandle): number {
+    // Shaped rather than a plain sine: a sine dwells near its peaks, which at a
+    // wide amplitude leaves the archer lying over at full lean most of the time
+    // instead of staggering through it.
+    const raw = Math.sin(handle.wobblePhase);
+    const shaped = Math.sign(raw) * Math.abs(raw) ** RAGDOLL.swingShape;
+
     return (
-      Math.sin(handle.wobblePhase) * RAGDOLL.swingAmplitude +
+      shaped * RAGDOLL.swingAmplitude +
       Math.sin(handle.wobblePhase * RAGDOLL.swingDetuneRatio + handle.wobbleSeed) *
         RAGDOLL.swingDetune
     );
