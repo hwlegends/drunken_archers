@@ -132,15 +132,19 @@ export interface RagdollHandle {
   bodies: Matter.Body[];
   constraints: Matter.Constraint[];
   /**
-   * The bow arm's own joints, held inert while the archer is alive because the
-   * arm is posed directly; restored on death so the arm hangs and the bow stays
-   * in its hand. Storing the intended values here is what makes that reversible.
+   * Every joint in the body, held inert while the archer is standing because
+   * the whole body is posed directly. `CombatSystem` restores them the moment
+   * the archer topples or dies, and the ragdoll takes over from there.
    */
-  armJoints: Array<{ constraint: Matter.Constraint; stiffness: number; damping: number }>;
-  /** Soft constraint holding the character upright over its feet. */
-  balance: Matter.Constraint | null;
-  /** Rest position of the balance anchor; the sway drifts around this. */
-  balanceAnchor: Vec2;
+  joints: Array<{ constraint: Matter.Constraint; stiffness: number; damping: number }>;
+  /** The point between the feet that the standing body swings about. */
+  pivot: Vec2;
+  /** Each part's rest placement relative to `pivot`, used to pose the swing. */
+  restPose: Array<{ body: Matter.Body; offset: Vec2; angle: number }>;
+  /** True while the archer is on its feet and being posed. */
+  standing: boolean;
+  /** Accumulated destabilisation from hits; at 1 the archer loses its footing. */
+  balanceLoss: number;
   collisionGroup: number;
   /** Per-part damage region lookup, keyed by Matter body id. */
   regionOf: Map<number, BodyRegion>;

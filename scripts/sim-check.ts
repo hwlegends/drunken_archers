@@ -127,7 +127,7 @@ interface Rig {
   defeats: Array<{ loser: Side; byHeadshot: boolean; byFall: boolean }>;
   hits: Array<{ target: Side; region: string; damage: number }>;
   step: (steps: number, perStep?: (i: number) => void) => void;
-  /** Turn the drunken wobble off so a shot can be aimed deterministically. */
+  /** Freeze the swing in place so a shot can be aimed deterministically. */
   setSway: (enabled: boolean) => void;
 }
 
@@ -173,6 +173,8 @@ function makeRig(theme: 'desert' | 'city' | 'jungle' = 'desert', seed = 1234): R
   let swayEnabled = true;
   const step = (steps: number, perStep?: (i: number) => void) => {
     for (let i = 0; i < steps; i++) {
+      // Freezing the swing means holding its phase still, not dropping the
+      // pose — an unposed archer is a ragdoll and simply falls over.
       if (swayEnabled) {
         sway.update(ragdolls.left, TIME.step);
         sway.update(ragdolls.right, TIME.step);
@@ -183,10 +185,8 @@ function makeRig(theme: 'desert' | 'city' | 'jungle' = 'desert', seed = 1234): R
       projectiles.update(TIME.step);
       combat.checkFallBoundary(ragdolls, players, arena.fallBoundary);
       Matter.Engine.update(physics.engine, TIME.step);
-      if (swayEnabled) {
-        sway.poseBowArm(ragdolls.left, ragdolls.right.torso.position.x);
-        sway.poseBowArm(ragdolls.right, ragdolls.left.torso.position.x);
-      }
+      sway.pose(ragdolls.left, ragdolls.right.torso.position.x);
+      sway.pose(ragdolls.right, ragdolls.left.torso.position.x);
       projectiles.syncOrientation();
     }
   };
@@ -204,18 +204,25 @@ const SECONDS = (s: number) => Math.round((s * 1000) / TIME.step);
  * 3. Ragdoll stability — they must sway hard but stay standing
  * ------------------------------------------------------------------ */
 
-section('3. Ragdoll balance');
+section('3. Body swing');
 {
   for (const theme of ['desert', 'city', 'jungle'] as const) {
     const rig = makeRig(theme, 909);
     const startX = { left: rig.ragdolls.left.torso.position.x, right: rig.ragdolls.right.torso.position.x };
     let maxSway = 0;
     let maxTilt = 0;
+    // The feet must stay put: the body pivots about them, it does not walk.
+    let maxFootDrift = 0;
 
     rig.step(SECONDS(20), () => {
       for (const side of ['left', 'right'] as Side[]) {
-        maxSway = Math.max(maxSway, Math.abs(rig.ragdolls[side].torso.position.x - startX[side]));
-        maxTilt = Math.max(maxTilt, Math.abs(rig.ragdolls[side].torso.angle));
+        const r = rig.ragdolls[side];
+        maxSway = Math.max(maxSway, Math.abs(r.torso.position.x - startX[side]));
+        maxTilt = Math.max(maxTilt, Math.abs(r.torso.angle));
+        for (const name of ['lowerLegFront', 'lowerLegBack']) {
+          const foot = r.parts[name];
+          maxFootDrift = Math.max(maxFootDrift, Math.abs(foot.position.y - r.pivot.y));
+        }
       }
     });
 
@@ -224,19 +231,41 @@ section('3. Ragdoll balance');
       rig.ragdolls.right.torso.position.y < rig.arena.fallBoundary &&
       !rig.defeats.length;
 
-    check(theme + ': both archers survive 20s of sway', upright, rig.defeats.length + ' defeats');
+    check(theme + ': both archers stay on their feet for 20s', upright, rig.defeats.length + ' defeats');
+
     const tiltDeg = (maxTilt * 180) / Math.PI;
     check(
-      theme + ': sway is visible but controlled',
-      maxSway > 2 && maxSway < 90,
-      'max torso drift ' + maxSway.toFixed(1) + 'px',
+      theme + ': the body swings visibly without spinning',
+      Number.isFinite(tiltDeg) && tiltDeg > 5 && tiltDeg < 40,
+      'max lean ' + tiltDeg.toFixed(1) + ' deg, torso travel ' + maxSway.toFixed(1) + 'px',
     );
-    // Assert the tilt, do not merely report it: an earlier version of this test
-    // printed a torso spinning to 1e167 degrees and still passed.
     check(
-      theme + ': the archer leans without spinning',
-      Number.isFinite(tiltDeg) && tiltDeg > 3 && tiltDeg < 75,
-      'max torso tilt ' + tiltDeg.toFixed(1) + ' deg',
+      theme + ': the archer pivots about its feet rather than walking',
+      maxFootDrift < 30,
+      'feet stay within ' + maxFootDrift.toFixed(1) + 'px of the pivot',
+    );
+    rig.physics.destroy();
+  }
+
+  // The swing must be a readable oscillation, not noise: sampling it should
+  // trace a smooth arc that reverses direction at a steady cadence.
+  {
+    const rig = makeRig('desert', 4242);
+    const samples: number[] = [];
+    rig.step(SECONDS(12), () => samples.push(rig.ragdolls.left.torso.angle));
+
+    let reversals = 0;
+    for (let i = 2; i < samples.length; i++) {
+      const before = samples[i - 1] - samples[i - 2];
+      const after = samples[i] - samples[i - 1];
+      if (before !== 0 && after !== 0 && Math.sign(before) !== Math.sign(after)) reversals++;
+    }
+    // A clean ~2.4s swing over 12s reverses roughly ten times; noise reverses
+    // hundreds of times.
+    check(
+      'the swing is a predictable oscillation, not jitter',
+      reversals > 3 && reversals < 60,
+      reversals + ' direction changes in 12s',
     );
     rig.physics.destroy();
   }
@@ -481,21 +510,54 @@ section('6. Damage and defeat');
     rig.physics.destroy();
   }
 
+  // Losing your footing.
+  {
+    const rig = makeRig('desert', 55);
+    rig.step(SECONDS(0.5));
+    const target = rig.ragdolls.right;
+
+    check('an archer starts the round on its feet', target.standing);
+
+    // One solid hit rocks the archer but should not fell it.
+    SwayController.addBalanceLoss(target, (COMBAT.damage.torso / COMBAT.maxHealth) * 1.6);
+    check('a single hit does not knock the archer down', target.standing,
+      'balance lost ' + target.balanceLoss.toFixed(2));
+
+    // A second, quickly after, does.
+    const toppled = SwayController.addBalanceLoss(target, (COMBAT.damage.torso / COMBAT.maxHealth) * 1.6);
+    check('two quick hits take the archer off its feet', toppled && !target.standing);
+
+    // A released archer must be a real ragdoll again: its joints are live.
+    check(
+      'a toppled archer gets its joints back',
+      target.joints.every(({ constraint, stiffness }) => constraint.stiffness === stiffness),
+      target.joints.length + ' joints restored',
+    );
+    rig.physics.destroy();
+  }
+
+  // Balance recovers, so spaced-out hits never accumulate into a topple.
+  {
+    const rig = makeRig('desert', 56);
+    rig.step(SECONDS(0.5));
+    const target = rig.ragdolls.right;
+    for (let i = 0; i < 6; i++) {
+      SwayController.addBalanceLoss(target, (COMBAT.damage.upperLeg / COMBAT.maxHealth) * 1.6);
+      rig.step(SECONDS(2));
+    }
+    check('balance recovers between spaced-out hits', target.standing,
+      'balance lost ' + target.balanceLoss.toFixed(2) + ' after 6 spaced limb hits');
+    rig.physics.destroy();
+  }
+
   // Falling off the platform.
   {
     const rig = makeRig('desert', 31);
     rig.step(SECONDS(0.5));
 
-    // Release the footing exactly the way CombatSystem does when a fighter goes
-    // limp: Matter applies a constraint's damping term independently of its
-    // stiffness, so both have to be zeroed or the body stays tethered.
-    for (const c of rig.ragdolls.right.constraints) {
-      if (!c.bodyA || !c.bodyB) {
-        c.stiffness = 0;
-        c.damping = 0;
-      }
-    }
-    rig.setSway(false);
+    // Knock the archer off its feet through the same path a heavy hit uses, so
+    // it stops being posed and becomes a free ragdoll.
+    SwayController.releaseRagdoll(rig.ragdolls.right);
     const gapX =
       (rig.arena.platforms.left.x + rig.arena.platforms.right.x) / 2 - rig.ragdolls.right.torso.position.x;
     for (const body of rig.ragdolls.right.bodies) {

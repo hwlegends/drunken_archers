@@ -1,7 +1,8 @@
 import Matter from 'matter-js';
-import { COMBAT } from '../config/constants';
+import { COMBAT, RAGDOLL } from '../config/constants';
 import type { BodyRegion, HitEvent, PlayerState, RagdollHandle, Side, Vec2 } from '../types';
 import { bodySpeed } from './PhysicsWorld';
+import { SwayController } from './SwayController';
 import type { ProjectileSystem } from './ProjectileSystem';
 
 export interface CombatCallbacks {
@@ -85,6 +86,14 @@ export class CombatSystem {
     player.health = Math.max(0, player.health - damage);
     this.applyKnockback(target, ragdolls[targetSide], arrowBody, speed);
 
+    // A solid hit costs the archer its balance. Enough of it in quick succession
+    // and the archer loses its footing entirely and becomes a free ragdoll —
+    // which is also how a living fighter can end up falling off the arena.
+    SwayController.addBalanceLoss(
+      ragdolls[targetSide],
+      (damage / COMBAT.maxHealth) * RAGDOLL.toppleGain,
+    );
+
     const fatal = player.health <= 0;
 
     // 8. Mark the arrow as spent so it can never damage again.
@@ -157,23 +166,9 @@ export class CombatSystem {
     const ragdoll = ragdolls[side];
     ragdoll.dead = true;
 
-    // Let the body go completely limp: drop the balance spring and the feet.
-    // Matter applies a constraint's damping independently of its stiffness, so
-    // both have to be zeroed or the body stays tethered to its anchors.
-    for (const c of ragdoll.constraints) {
-      if (!c.bodyA || !c.bodyB) {
-        c.stiffness = 0;
-        c.damping = 0;
-      }
-    }
-    ragdoll.balance = null;
-
-    // Hand the bow arm back to the solver so it drops with the rest of the body
-    // and keeps hold of its bow. Nothing poses it once the archer is dead.
-    for (const { constraint, stiffness, damping } of ragdoll.armJoints) {
-      constraint.stiffness = stiffness;
-      constraint.damping = damping;
-    }
+    // Hand the whole body back to the solver. Its joints go live, nothing poses
+    // it any more, and it collapses under its own weight still holding its bow.
+    SwayController.releaseRagdoll(ragdoll);
 
     this.callbacks.onDefeat(side, headshot, byFall);
   }

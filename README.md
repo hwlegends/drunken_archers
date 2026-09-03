@@ -47,7 +47,7 @@ src/
                 arenas.ts      three themes + platform generation and validation
   game/         PhysicsWorld   Matter engine, fixed timestep, px/s <-> px/step units
                 RagdollFactory eleven jointed bodies plus a bow, per fighter
-                SwayController the drunkenness: body sway, stance, bow-arm sweep
+                SwayController the drunkenness: body swing, topples, bow-arm sweep
                 BowController  draw, charge, release, recoil, reload
                 ProjectileSystem arrow flight, embedding, cleanup
                 CombatSystem   the damage pipeline, defeat and scoring
@@ -68,17 +68,22 @@ A few details worth knowing:
   other module touches Matter's raw units.
 - **The bow is welded to the forward hand.** Its angle follows the arm pose, and
   that angle *is* the shot direction. There is no aiming input.
-- **The bow arm is posed directly, not solved for.** Three solver-based attempts
-  failed in instructive ways: a torque servo on a wrapped angle error has an
-  unstable equilibrium at 180 degrees and winds the arm into a permanent spin,
-  and constraining the elbow and hand both over-constrains a two-degree-of-freedom
-  chain until the solver pumps in energy. The arm is now placed along a ray from
-  the shoulder *after* each solver step, and its own joints are held inert while
-  the archer is alive — left live they feed the placement back into the torso and
-  tumble the ragdoll. `CombatSystem` restores them on death so the arm goes limp
-  still holding its bow. The sweep carries the bow across roughly -4 to 44 degrees
-  of elevation, through the useful 10-35 degree firing band; that crossing is what
-  the player times.
+- **A standing archer is posed, not solved for.** The body swings as one rigid
+  piece about a pivot between its feet, like a metronome, and the bow arm sweeps
+  on top of that. Keeping the body rigid is a gameplay decision: a player can
+  watch the swing and anticipate where the target will be, which loose
+  independently-wobbling limbs never allowed. It is also what finally made the
+  motion stable — three solver-driven attempts failed first. A torque servo on a
+  wrapped angle error has an unstable equilibrium at 180 degrees and winds a limb
+  into a permanent spin; constraining two points of a two-degree-of-freedom chain
+  over-constrains it until the solver pumps in energy. Posing cannot wind up or
+  blow up. Every joint is held inert while the archer stands, and `CombatSystem`
+  restores them the moment it topples or dies, so the ragdoll takes over intact.
+- **Hits cost balance.** Damage feeds a `balanceLoss` counter that recovers over
+  time; cross the threshold — roughly two solid hits in quick succession — and
+  the archer loses its footing, becomes a free ragdoll, and can be knocked clean
+  off the arena. That is what keeps a fall a real way to lose a round now that a
+  standing archer is posed rather than balanced by the solver.
 - **Damping coefficients have a hard stability ceiling.** Matter integrates
   `angularVelocity += torque / inertia * dt^2`, and `dt^2` is about 278 at a
   60Hz step, so an inertia-scaled damping coefficient at or above `2 / 278`
@@ -95,7 +100,7 @@ A few details worth knowing:
 ## Verification
 
 ```bash
-npm run sim-check          # 66 headless physics/combat/AI assertions
+npm run sim-check          # 72 headless physics/combat/AI assertions
 npm run visual-check       # drives the built game in Chrome, writes shots/
 npm run match-flow-check   # plays a full match to 5 and a deathmatch run (~6 min)
 npm run typecheck

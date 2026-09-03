@@ -10,116 +10,86 @@ import type { RagdollHandle } from '../types';
 const wrapAngle = (angle: number): number => Math.atan2(Math.sin(angle), Math.cos(angle));
 
 /**
- * The drunkenness.
+ * The drunkenness, in two layers.
  *
- * Three uncoupled motions run at deliberately unrelated periods so the archer
- * never settles into a rhythm a player can memorise:
+ * The body swings as one rigid piece about a pivot between the feet, like a
+ * metronome tipping from one foot to the other. That is deliberately readable:
+ * a player can watch the swing and anticipate where the archer will be, which
+ * loose independently-wobbling limbs never allowed.
  *
- *  - the torso rocks under a slow alternating torque, fighting an upright spring;
- *  - the balance anchor wanders a Lissajous figure, so the body leans *and*
- *    bobs rather than sliding along a single left-right line;
- *  - the bow arm sweeps up and down through its own swing.
+ * On top of that the bow arm sweeps up and down on its own, unrelated period.
+ * The bow angle at the instant of release is the shot direction, so that sweep
+ * is what the player is really timing — the body swing says *where* the target
+ * is, the arm sweep decides *when* you can hit it.
  *
- * That last one is the game. The bow angle at the instant of release is the
- * shot direction, so the arm must genuinely move — a servo that pinned it level
- * would leave nothing to time.
+ * Both layers are posed directly rather than solved for, and only while the
+ * archer is standing. Once it topples or dies nothing poses it, its joints are
+ * handed back to the solver, and it becomes an ordinary ragdoll.
  */
 export class SwayController {
-  private jitterTimers = new Map<RagdollHandle, number>();
-
-  /** @param stepMs fixed simulation step in milliseconds */
+  /** Advances each archer's phases. Runs before the solver step. */
   update(handle: RagdollHandle, stepMs: number): void {
-    if (handle.dead) return;
-
     const dt = stepMs / 1000;
-    handle.wobblePhase += (dt / RAGDOLL.swayPeriod) * Math.PI * 2;
-    handle.armPhase += (dt / RAGDOLL.armSwingPeriod) * Math.PI * 2;
 
-    const torso = handle.torso;
+    if (handle.standing && !handle.dead) {
+      handle.wobblePhase += (dt / RAGDOLL.swingPeriod) * Math.PI * 2;
+      handle.armPhase += (dt / RAGDOLL.armSwingPeriod) * Math.PI * 2;
+    }
 
-    // The archer actively fights to stay upright: a restoring torque toward
-    // vertical plus angular drag. Without this the sway just topples them.
-    const lean = wrapAngle(torso.angle);
-    torso.torque += -lean * RAGDOLL.uprightTorque * torso.inertia;
-    torso.torque += -torso.angularVelocity * RAGDOLL.uprightDamping * torso.inertia;
-
-    // Low-frequency alternating torque. Two detuned sine waves keep the motion
-    // from reading as a clean oscillation.
-    const primary = Math.sin(handle.wobblePhase);
-    const secondary = Math.sin(handle.wobblePhase * 0.41 + handle.wobbleSeed) * 0.45;
-    torso.torque += (primary + secondary) * RAGDOLL.swayTorque;
-
-    this.keepStance(handle);
-    this.driftBalance(handle);
-
-    // Sparse random impulses.
-    const remaining = (this.jitterTimers.get(handle) ?? 0) - stepMs;
-    if (remaining <= 0) {
-      this.jitterTimers.set(handle, RAGDOLL.jitterIntervalMs * (0.5 + Math.random()));
-      const target = Math.random() < 0.6 ? torso : handle.parts.upperArmFront;
-      Matter.Body.applyForce(target, target.position, {
-        x: (Math.random() - 0.5) * RAGDOLL.jitterImpulse * target.mass * 1000,
-        y: (Math.random() - 0.5) * RAGDOLL.jitterImpulse * target.mass * 600,
-      });
-      torso.torque += (Math.random() - 0.5) * RAGDOLL.swayTorque * 1.4;
-    } else {
-      this.jitterTimers.set(handle, remaining);
+    // Balance recovers between hits, so only a quick pair of solid strikes
+    // actually knocks an archer off its feet.
+    if (handle.balanceLoss > 0) {
+      handle.balanceLoss = Math.max(0, handle.balanceLoss - RAGDOLL.toppleRecoveryPerSecond * dt);
     }
   }
 
   /**
-   * Holds the legs under the hips. The ankles are pinned, so without this the
-   * whole body swings about them like an inverted pendulum and the archer looks
-   * like it is lunging rather than standing and swaying.
+   * Poses the whole archer. Runs *after* the solver, so each body owns its final
+   * transform for the step and nothing is left for the next step to fight.
    */
-  private keepStance(handle: RagdollHandle): void {
-    for (const name of ['upperLegFront', 'upperLegBack', 'lowerLegFront', 'lowerLegBack']) {
-      const leg = handle.parts[name];
-      if (!leg) continue;
-      const lean = wrapAngle(leg.angle);
-      leg.torque += -lean * RAGDOLL.legUprightTorque * leg.inertia;
-      leg.torque += -leg.angularVelocity * RAGDOLL.legUprightDamping * leg.inertia;
+  pose(handle: RagdollHandle, enemyX: number): void {
+    if (!handle.standing || handle.dead) return;
+    this.poseBody(handle);
+    this.poseBowArm(handle, enemyX);
+  }
+
+  /** The angle this archer is currently leaning at, in radians. */
+  swingAngle(handle: RagdollHandle): number {
+    return (
+      Math.sin(handle.wobblePhase) * RAGDOLL.swingAmplitude +
+      Math.sin(handle.wobblePhase * RAGDOLL.swingDetuneRatio + handle.wobbleSeed) *
+        RAGDOLL.swingDetune
+    );
+  }
+
+  /**
+   * Rotates every part rigidly about the foot pivot. Because the whole body
+   * turns together, the archer tips from one foot to the other as a single
+   * piece instead of the legs folding underneath it.
+   */
+  private poseBody(handle: RagdollHandle): void {
+    const theta = this.swingAngle(handle);
+    const cos = Math.cos(theta);
+    const sin = Math.sin(theta);
+    const { x: px, y: py } = handle.pivot;
+
+    for (const { body, offset, angle } of handle.restPose) {
+      this.place(
+        body,
+        px + offset.x * cos - offset.y * sin,
+        py + offset.x * sin + offset.y * cos,
+        angle + theta,
+        RAGDOLL.poseTrackRate,
+      );
     }
   }
 
   /**
-   * Walks the balance anchor around a Lissajous path. Because the feet stay
-   * pinned, moving the anchor makes the whole body lean, bob and shift its
-   * weight instead of translating along one axis.
+   * Sweeps the bow arm on top of the body swing. The upper arm, forearm and bow
+   * are placed along a ray from the shoulder whose elevation rises and falls,
+   * measured in the torso's frame so the body's lean feeds into the aim.
    */
-  private driftBalance(handle: RagdollHandle): void {
-    const balance = handle.balance;
-    if (!balance) return;
-
-    // Reuse the wobble phase for X and a faster, offset phase for Y.
-    const t = handle.wobblePhase;
-    const ratio = RAGDOLL.swayPeriod / RAGDOLL.balanceDriftPeriod.x;
-    const ratioY = RAGDOLL.swayPeriod / RAGDOLL.balanceDriftPeriod.y;
-
-    balance.pointA = {
-      x: handle.balanceAnchor.x + Math.sin(t * ratio + handle.wobbleSeed) * RAGDOLL.balanceDrift.x,
-      y: handle.balanceAnchor.y + Math.sin(t * ratioY + handle.wobbleSeed * 1.7) * RAGDOLL.balanceDrift.y,
-    };
-  }
-
-  /**
-   * Poses the bow arm. Runs *after* the solver: every body is placed from the
-   * torso's own final transform, so all the arm's joints come out satisfied and
-   * nothing is left for the next step to fight. Posing before the solver instead
-   * left a standing offset and pumped energy into the ragdoll.
-   *
-   * The upper arm, forearm and bow are placed along a ray
-   * from the shoulder whose elevation sweeps up and down, and the arm is eased
-   * toward that pose rather than snapped to it, so an arrow strike still shoves
-   * it visibly before it recovers.
-   *
-   * The angle is measured in the torso's frame, so the body's lean adds to the
-   * arm's own swing — the whole drunken motion feeds the bow, which is the
-   * thing the player is timing. A dead archer is never posed, so the arm simply
-   * goes limp on its joints.
-   */
-  poseBowArm(handle: RagdollHandle, enemyX: number): void {
-    if (handle.dead) return;
+  private poseBowArm(handle: RagdollHandle, enemyX: number): void {
     const torso = handle.torso;
     const facing = Math.sign(enemyX - torso.position.x) || handle.facing;
 
@@ -134,60 +104,71 @@ export class SwayController {
     const sin = Math.sin(torso.angle);
     const sx = facing * 3;
     const sy = -RAGDOLL.torso.h / 2 + 5;
-    const shoulder = {
-      x: torso.position.x + sx * cos - sy * sin,
-      y: torso.position.y + sx * sin + sy * cos,
-    };
+    const shoulderX = torso.position.x + sx * cos - sy * sin;
+    const shoulderY = torso.position.y + sx * sin + sy * cos;
 
     // A limb's long axis is local +Y, so this angle points it forward and
     // `lift` radians above horizontal, relative to however the torso is leaning.
     const limbAngle = torso.angle - facing * (Math.PI / 2 + lift);
-    const dir = { x: -Math.sin(limbAngle), y: Math.cos(limbAngle) };
+    const dirX = -Math.sin(limbAngle);
+    const dirY = Math.cos(limbAngle);
 
-    const upper = handle.parts.upperArmFront;
-    const fore = handle.parts.lowerArmFront;
-    const reachUpper = RAGDOLL.upperArm.h / 2;
-    const reachFore = RAGDOLL.upperArm.h + RAGDOLL.lowerArm.h / 2;
-    const reachHand = RAGDOLL.upperArm.h + RAGDOLL.lowerArm.h;
+    const rate = RAGDOLL.armTrackRate;
+    const along = (distance: number, angle: number, body: Matter.Body) =>
+      this.place(body, shoulderX + dirX * distance, shoulderY + dirY * distance, angle, rate);
 
-    this.poseTo(upper, shoulder, dir, reachUpper, limbAngle, torso);
-    this.poseTo(fore, shoulder, dir, reachFore, limbAngle, torso);
+    along(RAGDOLL.upperArm.h / 2, limbAngle, handle.parts.upperArmFront);
+    along(RAGDOLL.upperArm.h + RAGDOLL.lowerArm.h / 2, limbAngle, handle.parts.lowerArmFront);
     // The bow's local +X is the shot direction, a quarter turn from the limb.
-    this.poseTo(handle.bow, shoulder, dir, reachHand, limbAngle + Math.PI / 2, torso);
+    along(RAGDOLL.upperArm.h + RAGDOLL.lowerArm.h, limbAngle + Math.PI / 2, handle.bow);
   }
 
-  /** Eases one body toward a point on the aim ray and a target angle. */
-  private poseTo(
-    body: Matter.Body,
-    shoulder: { x: number; y: number },
-    dir: { x: number; y: number },
-    distance: number,
-    angle: number,
-    torso: Matter.Body,
-  ): void {
-    const rate = RAGDOLL.armTrackRate;
-    const targetX = shoulder.x + dir.x * distance;
-    const targetY = shoulder.y + dir.y * distance;
+  /**
+   * Eases one body toward a target transform. Blending rather than snapping is
+   * what keeps a struck archer visibly springy: an arrow's impulse shoves the
+   * body for a few frames before the pose draws it back.
+   */
+  private place(body: Matter.Body, x: number, y: number, angle: number, rate: number): void {
+    const fromX = body.position.x;
+    const fromY = body.position.y;
+    const toX = fromX + (x - fromX) * rate;
+    const toY = fromY + (y - fromY) * rate;
 
-    Matter.Body.setPosition(body, {
-      x: body.position.x + (targetX - body.position.x) * rate,
-      y: body.position.y + (targetY - body.position.y) * rate,
-    });
-
+    Matter.Body.setPosition(body, { x: toX, y: toY });
     // Always turn the short way round, so the angle can never wind up.
-    const delta = wrapAngle(angle - body.angle);
-    Matter.Body.setAngle(body, body.angle + delta * rate);
+    Matter.Body.setAngle(body, body.angle + wrapAngle(angle - body.angle) * rate);
 
-    // Carry the torso's motion so contacts read sensibly, and never spin.
-    Matter.Body.setVelocity(body, { x: torso.velocity.x, y: torso.velocity.y });
+    // Report the motion actually travelled, so contacts read sensibly.
+    Matter.Body.setVelocity(body, { x: toX - fromX, y: toY - fromY });
     Matter.Body.setAngularVelocity(body, 0);
   }
 
-  forget(handle: RagdollHandle): void {
-    this.jitterTimers.delete(handle);
+  /**
+   * Hands an archer back to the solver: its joints go live and nothing poses it
+   * again. Used both when a hit knocks it off its feet and when it is defeated.
+   */
+  static releaseRagdoll(handle: RagdollHandle): void {
+    if (!handle.standing) return;
+    handle.standing = false;
+    for (const { constraint, stiffness, damping } of handle.joints) {
+      constraint.stiffness = stiffness;
+      constraint.damping = damping;
+    }
+  }
+
+  /**
+   * Adds destabilisation from a hit. Returns true if this was the blow that
+   * took the archer off its feet.
+   */
+  static addBalanceLoss(handle: RagdollHandle, amount: number): boolean {
+    if (!handle.standing) return false;
+    handle.balanceLoss += amount;
+    if (handle.balanceLoss < RAGDOLL.toppleThreshold) return false;
+    SwayController.releaseRagdoll(handle);
+    return true;
   }
 
   reset(): void {
-    this.jitterTimers.clear();
+    /* no cached per-archer state */
   }
 }

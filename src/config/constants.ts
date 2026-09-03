@@ -92,46 +92,30 @@ export const RAGDOLL = {
   frictionAir: 0.02,
   friction: 0.6,
   restitution: 0.02,
-  /** Joint softness. Lower = looser, drunker. */
+  /** Joint softness, used once the ragdoll is released on a topple or death. */
   jointStiffness: 0.92,
   jointDamping: 0.14,
-  /** Ankle anchors pinning the feet to the platform. */
-  footStiffness: 0.9,
-  footDamping: 0.16,
-  /** The soft "keep upright over the feet" spring. */
-  balanceStiffness: 0.05,
-  balanceDamping: 0.16,
+
   /**
-   * Restoring torque pulling the torso back to vertical, scaled by inertia.
-   * Without it the sway torque simply topples the archer; with it the archer
-   * fights to stay up and keeps wobbling around vertical instead.
+   * The standing archer swings as one rigid body about a pivot between its
+   * feet, like a metronome, rather than each limb wobbling on its own. That is
+   * what makes an archer's position readable: a player can watch the swing and
+   * anticipate where the target will be, instead of guessing at loose limbs.
    */
-  uprightTorque: 0.0003,
+  swingAmplitude: 0.26,
+  swingPeriod: 2.4,
+  /** A small detuned second swing, so it reads as alive but stays predictable. */
+  swingDetune: 0.055,
+  swingDetuneRatio: 0.41,
+
   /**
-   * Angular drag on the torso.
-   *
-   * Matter integrates `angularVelocity += torque / inertia * dt^2`, and with a
-   * 16.67ms step `dt^2` is ~278. An inertia-scaled damping coefficient `c`
-   * therefore changes the velocity by `-c * 278 * omega` each step, so anything
-   * at or above `2 / 278` (0.0072) overshoots past zero and diverges rather than
-   * damping. These are set well inside that limit.
+   * How much of a hit's damage turns into lost balance, and how fast that
+   * recovers. Cross `toppleThreshold` and the archer loses its footing and
+   * becomes a free ragdoll — it can then be knocked off the arena entirely.
    */
-  uprightDamping: 0.00145,
-  /**
-   * A gentler version of the upright pair, applied to the legs. Without it the
-   * whole body pivots about the pinned ankles and the archer reads as lunging
-   * or doubled over rather than standing and rocking.
-   */
-  legUprightTorque: 0.0002,
-  legUprightDamping: 0.0012,
-  /** Alternating torso torque — this is the drunken sway. */
-  swayTorque: 0.0085,
-  /** Sway oscillation period, seconds. */
-  swayPeriod: 2.6,
-  /** Random impulse magnitude so the sway never repeats exactly. */
-  jitterImpulse: 0.00042,
-  /** Mean ms between random jitter impulses. */
-  jitterIntervalMs: 420,
+  toppleGain: 1.6,
+  toppleThreshold: 1,
+  toppleRecoveryPerSecond: 0.5,
 
   /**
    * The bow arm rides this far above horizontal at rest, which lifts the bow up
@@ -144,31 +128,24 @@ export const RAGDOLL = {
    * still arm would mean a game with no skill in it.
    */
   armSwingAmplitude: 0.30,
-  /** Arm swing period, seconds. Deliberately not a ratio of `swayPeriod`. */
+  /** Arm swing period, seconds. Deliberately not a ratio of `swingPeriod`. */
   armSwingPeriod: 1.55,
   /** A second, detuned swing so the sweep never repeats exactly. */
   armSwingWobble: 0.12,
   armSwingWobbleRatio: 0.57,
   /**
-   * How fast the bow arm converges on its target pose each step, 0..1.
+   * How fast a posed body converges on its target each step, 0..1.
    *
-   * The arm is posed directly rather than through the solver. Three solver-based
-   * attempts all failed: a torque servo on a wrapped angle error has an unstable
-   * equilibrium at 180 degrees and winds the arm into a permanent spin, and
-   * constraining the elbow and hand both over-constrains a two-degree-of-freedom
-   * chain until the solver pumps in energy. Posing it directly cannot wind or
-   * blow up, and blending rather than snapping keeps the arm visibly springy
-   * when an arrow strikes it.
+   * The archer is posed directly rather than solved for. Solver-driven attempts
+   * failed repeatedly: a torque servo on a wrapped angle error has an unstable
+   * equilibrium at 180 degrees and winds a limb into a permanent spin, and
+   * constraining two points of a two-degree-of-freedom chain over-constrains it
+   * until the solver pumps in energy. Posing cannot wind up or blow up, and
+   * blending rather than snapping leaves the archer visibly springy when struck.
    */
+  poseTrackRate: 0.45,
   armTrackRate: 0.55,
 
-  /**
-   * The balance anchor wanders on a Lissajous path. Two different periods make
-   * the body lean and bob through a 2D figure rather than sliding along one
-   * left-right line.
-   */
-  balanceDrift: { x: 12, y: 11 },
-  balanceDriftPeriod: { x: 3.3, y: 2.05 },
 } as const;
 
 export const MATCH = {

@@ -223,10 +223,7 @@ export class GameEngine {
     this.projectiles.clear();
     for (const side of SIDES) {
       const ragdoll = this.ragdolls[side];
-      if (ragdoll) {
-        this.sway.forget(ragdoll);
-        this.ragdollFactory.destroy(ragdoll);
-      }
+      if (ragdoll) this.ragdollFactory.destroy(ragdoll);
       this.ragdolls[side] = undefined;
       this.bows[side] = undefined;
       this.ai[side] = undefined;
@@ -379,7 +376,7 @@ export class GameEngine {
       this.physics.update(
         delta,
         (stepMs) => this.simulate(stepMs),
-        () => this.poseArms(),
+        () => this.poseFighters(),
       );
       // Orientation is synced after the solver so arrows never render a step behind.
       this.projectiles.syncOrientation();
@@ -395,8 +392,7 @@ export class GameEngine {
     const right = this.ragdolls.right;
     if (!left || !right || !this.arena) return;
 
-    // Drunken sway for both fighters, always — even a defeated one keeps
-    // ragdolling, it just loses its balance spring.
+    // Advance both archers' swing phases and let their balance recover.
     this.sway.update(left, stepMs);
     this.sway.update(right, stepMs);
 
@@ -426,16 +422,16 @@ export class GameEngine {
   }
 
   /**
-   * Places both bow arms after the solver has run, so each arm owns its final
-   * transform for the step and the bow angle the player sees is exactly the one
-   * a shot would use.
+   * Poses both archers after the solver has run, so each body owns its final
+   * transform for the step and the bow angle on screen is exactly the one a
+   * shot would use. A toppled or defeated archer is skipped and left to ragdoll.
    */
-  private poseArms(): void {
+  private poseFighters(): void {
     const left = this.ragdolls.left;
     const right = this.ragdolls.right;
     if (!left || !right) return;
-    this.sway.poseBowArm(left, right.torso.position.x);
-    this.sway.poseBowArm(right, left.torso.position.x);
+    this.sway.pose(left, right.torso.position.x);
+    this.sway.pose(right, left.torso.position.x);
   }
 
   private headPoint(r: RagdollHandle): Vec2 {

@@ -200,73 +200,45 @@ export class RagdollFactory {
     joint(legFront, shinFront, { x: 0, y: RAGDOLL.upperLeg.h / 2 }, { x: 0, y: -RAGDOLL.lowerLeg.h / 2 });
     joint(legBack, shinBack, { x: 0, y: RAGDOLL.upperLeg.h / 2 }, { x: 0, y: -RAGDOLL.lowerLeg.h / 2 });
 
-    // Shoulders. The bow arm's own joints are collected below and held inert
-    // while the archer is alive.
-    const shoulderFrontJoint = joint(torso, armFrontUpper, { x: f * 3, y: -halfTorso + 5 }, { x: 0, y: -RAGDOLL.upperArm.h / 2 });
+    // Shoulders.
+    joint(torso, armFrontUpper, { x: f * 3, y: -halfTorso + 5 }, { x: 0, y: -RAGDOLL.upperArm.h / 2 });
     joint(torso, armBackUpper, { x: -f * 2, y: -halfTorso + 7 }, { x: 0, y: -RAGDOLL.upperArm.h / 2 });
     // Elbows.
-    const elbowFrontJoint = joint(armFrontUpper, armFrontLower, { x: 0, y: RAGDOLL.upperArm.h / 2 }, { x: 0, y: -RAGDOLL.lowerArm.h / 2 });
+    joint(armFrontUpper, armFrontLower, { x: 0, y: RAGDOLL.upperArm.h / 2 }, { x: 0, y: -RAGDOLL.lowerArm.h / 2 });
     joint(armBackUpper, armBackLower, { x: 0, y: RAGDOLL.upperArm.h / 2 }, { x: 0, y: -RAGDOLL.lowerArm.h / 2 });
 
     // Bow welded to the forward hand with two anchors, fixing its orientation
     // to the arm pose. Players never aim directly — this is what they fight.
-    const bowWeldA = joint(armFrontLower, bow, { x: 0, y: RAGDOLL.lowerArm.h / 2 }, { x: 0, y: 0 }, 1);
-    const bowWeldB = joint(armFrontLower, bow, { x: 0, y: RAGDOLL.lowerArm.h / 2 - 6 }, { x: -6, y: 0 }, 0.9);
+    joint(armFrontLower, bow, { x: 0, y: RAGDOLL.lowerArm.h / 2 }, { x: 0, y: 0 }, 1);
+    joint(armFrontLower, bow, { x: 0, y: RAGDOLL.lowerArm.h / 2 - 6 }, { x: -6, y: 0 }, 0.9);
+
+
+    /* ---- standing pose ------------------------------------------- */
 
     /**
-     * The bow arm is posed directly by SwayController rather than solved for, so
-     * while the archer is alive these joints are switched off entirely. Left
-     * live, they would transmit the arm's placement back into the torso every
-     * step and pump the ragdoll full of energy until it tumbled.
+     * A standing archer is posed directly, so none of these joints should act
+     * while it is on its feet — left live they fight the placement and pump the
+     * ragdoll full of energy. They are stored with their intended values and
+     * switched back on the instant the archer topples or dies.
      */
-    const armJoints = [shoulderFrontJoint, elbowFrontJoint, bowWeldA, bowWeldB].map((constraint) => ({
+    const joints = constraints.map((constraint) => ({
       constraint,
       stiffness: constraint.stiffness,
       damping: constraint.damping,
     }));
-    for (const { constraint } of armJoints) {
+    for (const { constraint } of joints) {
       constraint.stiffness = 0;
       constraint.damping = 0;
     }
 
-    /* ---- footing ------------------------------------------------- */
-
-    // Soft ground anchors under each foot. Stiff enough to keep the archer on
-    // its platform, loose enough to allow a huge drunken sway.
-    const footAnchorY = y + RAGDOLL.upperLeg.h + RAGDOLL.lowerLeg.h;
-    const feet: Array<[Matter.Body, number]> = [
-      [shinFront, f * legSpread * 0.9],
-      [shinBack, -f * legSpread * 1.2],
-    ];
-    for (const [shin, offset] of feet) {
-      constraints.push(
-        Matter.Constraint.create({
-          pointA: { x: x + offset, y: footAnchorY },
-          bodyB: shin,
-          pointB: { x: 0, y: RAGDOLL.lowerLeg.h / 2 },
-          length: 0,
-          stiffness: RAGDOLL.footStiffness,
-          damping: RAGDOLL.footDamping,
-          render: { visible: false },
-        }),
-      );
-    }
-
-
-
-    // The balance spring: a long, very soft link from the torso to a point high
-    // above the spawn. It resists a full topple without stopping the wobble.
-    const balanceAnchor = { x, y: y - 150 };
-    const balance = Matter.Constraint.create({
-      pointA: { x: balanceAnchor.x, y: balanceAnchor.y },
-      bodyB: torso,
-      pointB: { x: 0, y: -halfTorso },
-      length: 150 - RAGDOLL.torso.h,
-      stiffness: RAGDOLL.balanceStiffness,
-      damping: RAGDOLL.balanceDamping,
-      render: { visible: false },
-    });
-    constraints.push(balance);
+    // The body swings about a point between the feet, so every part's rest
+    // placement is recorded relative to it.
+    const pivot: Vec2 = { x, y: y + RAGDOLL.upperLeg.h + RAGDOLL.lowerLeg.h };
+    const restPose = bodies.map((body) => ({
+      body,
+      offset: { x: body.position.x - pivot.x, y: body.position.y - pivot.y },
+      angle: body.angle,
+    }));
 
     this.physics.add(Matter.Composite.create({ bodies, constraints }));
 
@@ -282,9 +254,11 @@ export class RagdollFactory {
       bow,
       bodies,
       constraints,
-      armJoints,
-      balance,
-      balanceAnchor,
+      joints,
+      pivot,
+      restPose,
+      standing: true,
+      balanceLoss: 0,
       collisionGroup: group,
       regionOf,
       wobblePhase: Math.random() * Math.PI * 2,
@@ -310,7 +284,8 @@ export class RagdollFactory {
     for (const b of handle.bodies) this.physics.remove(b);
     handle.constraints.length = 0;
     handle.bodies.length = 0;
-    handle.balance = null;
+    handle.joints.length = 0;
+    handle.restPose.length = 0;
   }
 }
 
