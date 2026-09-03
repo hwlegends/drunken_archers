@@ -106,16 +106,24 @@ export const RAGDOLL = {
    * Without it the sway torque simply topples the archer; with it the archer
    * fights to stay up and keeps wobbling around vertical instead.
    */
-  uprightTorque: 0.0007,
-  /** Angular drag on the torso so it never spins up. */
-  uprightDamping: 0.009,
+  uprightTorque: 0.0003,
+  /**
+   * Angular drag on the torso.
+   *
+   * Matter integrates `angularVelocity += torque / inertia * dt^2`, and with a
+   * 16.67ms step `dt^2` is ~278. An inertia-scaled damping coefficient `c`
+   * therefore changes the velocity by `-c * 278 * omega` each step, so anything
+   * at or above `2 / 278` (0.0072) overshoots past zero and diverges rather than
+   * damping. These are set well inside that limit.
+   */
+  uprightDamping: 0.00145,
   /**
    * A gentler version of the upright pair, applied to the legs. Without it the
    * whole body pivots about the pinned ankles and the archer reads as lunging
    * or doubled over rather than standing and rocking.
    */
-  legUprightTorque: 0.00045,
-  legUprightDamping: 0.007,
+  legUprightTorque: 0.0002,
+  legUprightDamping: 0.0012,
   /** Alternating torso torque — this is the drunken sway. */
   swayTorque: 0.0085,
   /** Sway oscillation period, seconds. */
@@ -142,18 +150,17 @@ export const RAGDOLL = {
   armSwingWobble: 0.12,
   armSwingWobbleRatio: 0.57,
   /**
-   * The bow hand is pulled toward a target point that orbits the shoulder, and
-   * the two-link arm follows. This is deliberately positional rather than a
-   * torque servo: the shoulder is a single pin, so a servo working on a wrapped
-   * angle error has an unstable equilibrium at 180 degrees and will wind the
-   * arm into a permanent spin. A point target cannot wind up.
+   * How fast the bow arm converges on its target pose each step, 0..1.
+   *
+   * The arm is posed directly rather than through the solver. Three solver-based
+   * attempts all failed: a torque servo on a wrapped angle error has an unstable
+   * equilibrium at 180 degrees and winds the arm into a permanent spin, and
+   * constraining the elbow and hand both over-constrains a two-degree-of-freedom
+   * chain until the solver pumps in energy. Posing it directly cannot wind or
+   * blow up, and blending rather than snapping keeps the arm visibly springy
+   * when an arrow strikes it.
    */
-  aimStiffness: 0.075,
-  aimDamping: 0.14,
-  /** The elbow link is softer, so the arm still gives when it is hit. */
-  aimElbowStiffness: 0.05,
-  /** Shoulder-to-hand distance of the target, just inside full extension. */
-  aimReach: 37,
+  armTrackRate: 0.55,
 
   /**
    * The balance anchor wanders on a Lissajous path. Two different periods make

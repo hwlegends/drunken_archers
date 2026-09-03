@@ -158,6 +158,8 @@ export class CombatSystem {
     ragdoll.dead = true;
 
     // Let the body go completely limp: drop the balance spring and the feet.
+    // Matter applies a constraint's damping independently of its stiffness, so
+    // both have to be zeroed or the body stays tethered to its anchors.
     for (const c of ragdoll.constraints) {
       if (!c.bodyA || !c.bodyB) {
         c.stiffness = 0;
@@ -165,6 +167,13 @@ export class CombatSystem {
       }
     }
     ragdoll.balance = null;
+
+    // Hand the bow arm back to the solver so it drops with the rest of the body
+    // and keeps hold of its bow. Nothing poses it once the archer is dead.
+    for (const { constraint, stiffness, damping } of ragdoll.armJoints) {
+      constraint.stiffness = stiffness;
+      constraint.damping = damping;
+    }
 
     this.callbacks.onDefeat(side, headshot, byFall);
   }

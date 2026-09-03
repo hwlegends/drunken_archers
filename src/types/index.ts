@@ -131,17 +131,16 @@ export interface RagdollHandle {
   bow: Matter.Body;
   bodies: Matter.Body[];
   constraints: Matter.Constraint[];
+  /**
+   * The bow arm's own joints, held inert while the archer is alive because the
+   * arm is posed directly; restored on death so the arm hangs and the bow stays
+   * in its hand. Storing the intended values here is what makes that reversible.
+   */
+  armJoints: Array<{ constraint: Matter.Constraint; stiffness: number; damping: number }>;
   /** Soft constraint holding the character upright over its feet. */
   balance: Matter.Constraint | null;
   /** Rest position of the balance anchor; the sway drifts around this. */
   balanceAnchor: Vec2;
-  /**
-   * Pull the bow elbow and hand toward moving points. Targeting both joints
-   * fully determines the arm pose, so the elbow cannot flip between the two
-   * solutions a single hand target would leave ambiguous.
-   */
-  aim: Matter.Constraint | null;
-  aimElbow: Matter.Constraint | null;
   collisionGroup: number;
   /** Per-part damage region lookup, keyed by Matter body id. */
   regionOf: Map<number, BodyRegion>;

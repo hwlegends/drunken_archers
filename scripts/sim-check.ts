@@ -8,7 +8,7 @@
  *   npm run sim-check
  */
 import Matter from 'matter-js';
-import { AI, BOW, COMBAT, MATCH, PHYSICS, TIME, VIEW } from '../src/config/constants';
+import { AI, BOW, COMBAT, MATCH, PHYSICS, PROJECTILE, TIME, VIEW } from '../src/config/constants';
 import { createArena, generateArrangement, makeRng, validateArrangement } from '../src/config/arenas';
 import { AIController } from '../src/game/AIController';
 import { BowController } from '../src/game/BowController';
@@ -174,8 +174,8 @@ function makeRig(theme: 'desert' | 'city' | 'jungle' = 'desert', seed = 1234): R
   const step = (steps: number, perStep?: (i: number) => void) => {
     for (let i = 0; i < steps; i++) {
       if (swayEnabled) {
-        sway.update(ragdolls.left, TIME.step, ragdolls.right.torso.position.x);
-        sway.update(ragdolls.right, TIME.step, ragdolls.left.torso.position.x);
+        sway.update(ragdolls.left, TIME.step);
+        sway.update(ragdolls.right, TIME.step);
       }
       bows.left.update(TIME.step);
       bows.right.update(TIME.step);
@@ -183,6 +183,10 @@ function makeRig(theme: 'desert' | 'city' | 'jungle' = 'desert', seed = 1234): R
       projectiles.update(TIME.step);
       combat.checkFallBoundary(ragdolls, players, arena.fallBoundary);
       Matter.Engine.update(physics.engine, TIME.step);
+      if (swayEnabled) {
+        sway.poseBowArm(ragdolls.left, ragdolls.right.torso.position.x);
+        sway.poseBowArm(ragdolls.right, ragdolls.left.torso.position.x);
+      }
       projectiles.syncOrientation();
     }
   };
@@ -221,10 +225,18 @@ section('3. Ragdoll balance');
       !rig.defeats.length;
 
     check(theme + ': both archers survive 20s of sway', upright, rig.defeats.length + ' defeats');
+    const tiltDeg = (maxTilt * 180) / Math.PI;
     check(
       theme + ': sway is visible but controlled',
       maxSway > 2 && maxSway < 90,
-      'max torso drift ' + maxSway.toFixed(1) + 'px, tilt ' + ((maxTilt * 180) / Math.PI).toFixed(1) + ' deg',
+      'max torso drift ' + maxSway.toFixed(1) + 'px',
+    );
+    // Assert the tilt, do not merely report it: an earlier version of this test
+    // printed a torso spinning to 1e167 degrees and still passed.
+    check(
+      theme + ': the archer leans without spinning',
+      Number.isFinite(tiltDeg) && tiltDeg > 3 && tiltDeg < 75,
+      'max torso tilt ' + tiltDeg.toFixed(1) + ' deg',
     );
     rig.physics.destroy();
   }
@@ -322,6 +334,39 @@ section('5. Arrow flight');
   // Orientation follows velocity.
   const heading = Math.atan2(projectile.body.velocity.y, projectile.body.velocity.x);
   check('arrow points along its velocity', near(projectile.body.angle, heading, 0.02));
+
+  // The per-side arrow budget must not leak, and must never delete a live
+  // arrow that is still inside the budget.
+  {
+    const rig2 = makeRig('desert', 91);
+    const fired: number[] = [];
+    for (let i = 0; i < PROJECTILE.maxPerSide * 3; i++) {
+      const p = rig2.projectiles.launch('left', { x: 120, y: 300 }, -0.4, 700);
+      fired.push(p.id);
+      // Two steps only, so nothing has time to leave the world on its own.
+      rig2.step(2);
+    }
+    const tracked = rig2.projectiles.list();
+    const live = tracked.filter((p) => !p.embedded).length;
+    check(
+      'the arrow budget never exceeds its cap',
+      tracked.length <= PROJECTILE.maxPerSide,
+      tracked.length + ' tracked after ' + fired.length + ' shots (cap ' + PROJECTILE.maxPerSide + ')',
+    );
+    check(
+      'recently fired arrows are still in flight, not silently deleted',
+      live >= Math.min(4, PROJECTILE.maxPerSide),
+      live + ' live arrows',
+    );
+    // Every tracked arrow must still have a body in the world.
+    const worldIds = new Set(Matter.Composite.allBodies(rig2.physics.world).map((b) => b.id));
+    check(
+      'every tracked arrow still exists in the world',
+      tracked.every((p) => worldIds.has(p.body.id)),
+      tracked.filter((p) => !worldIds.has(p.body.id)).length + ' orphaned records',
+    );
+    rig2.physics.destroy();
+  }
 
   // Out-of-bounds cleanup.
   const stray = rig.projectiles.launch('left', { x: 100, y: 100 }, -Math.PI / 2, 4000);

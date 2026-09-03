@@ -103,10 +103,16 @@ export class PhysicsWorld {
 
   /**
    * Advances the simulation with a fixed timestep. `onStep` runs once per
-   * simulation step so systems tick at a stable rate regardless of frame rate.
+   * simulation step so systems tick at a stable rate regardless of frame rate;
+   * `afterStep` runs once per step after the solver, for anything that must own
+   * the final transform rather than have the solver perturb it.
    * Returns the render interpolation alpha for the leftover time.
    */
-  update(frameDeltaMs: number, onStep: (stepMs: number) => void): number {
+  update(
+    frameDeltaMs: number,
+    onStep: (stepMs: number) => void,
+    afterStep?: (stepMs: number) => void,
+  ): number {
     // A tab that was hidden, or a long stall, must not unleash a burst of steps.
     const delta = Math.min(frameDeltaMs, TIME.maxFrameDelta);
     this.accumulator += delta;
@@ -115,6 +121,7 @@ export class PhysicsWorld {
     while (this.accumulator >= TIME.step && steps < TIME.maxCatchUpSteps) {
       onStep(TIME.step);
       Matter.Engine.update(this.engine, TIME.step);
+      afterStep?.(TIME.step);
       this.accumulator -= TIME.step;
       steps++;
     }

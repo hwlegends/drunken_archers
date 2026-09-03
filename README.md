@@ -68,14 +68,22 @@ A few details worth knowing:
   other module touches Matter's raw units.
 - **The bow is welded to the forward hand.** Its angle follows the arm pose, and
   that angle *is* the shot direction. There is no aiming input.
-- **The bow arm is driven positionally, not by a torque servo.** The elbow and
-  hand are each pulled toward a point that orbits the shoulder, and the arm
-  follows. The shoulder is a single pin, so a servo working on a wrapped angle
-  error has an unstable equilibrium at 180 degrees and will wind the arm into a
-  permanent spin; targeting both joints also removes the elbow-flip ambiguity a
-  hand target alone would leave. The sweep carries the bow through roughly
-  -4 to 44 degrees of elevation, across the useful 10-35 degree firing band —
-  that crossing is what the player times.
+- **The bow arm is posed directly, not solved for.** Three solver-based attempts
+  failed in instructive ways: a torque servo on a wrapped angle error has an
+  unstable equilibrium at 180 degrees and winds the arm into a permanent spin,
+  and constraining the elbow and hand both over-constrains a two-degree-of-freedom
+  chain until the solver pumps in energy. The arm is now placed along a ray from
+  the shoulder *after* each solver step, and its own joints are held inert while
+  the archer is alive — left live they feed the placement back into the torso and
+  tumble the ragdoll. `CombatSystem` restores them on death so the arm goes limp
+  still holding its bow. The sweep carries the bow across roughly -4 to 44 degrees
+  of elevation, through the useful 10-35 degree firing band; that crossing is what
+  the player times.
+- **Damping coefficients have a hard stability ceiling.** Matter integrates
+  `angularVelocity += torque / inertia * dt^2`, and `dt^2` is about 278 at a
+  60Hz step, so an inertia-scaled damping coefficient at or above `2 / 278`
+  overshoots past zero and diverges instead of damping. Every such coefficient in
+  `constants.ts` is set well inside that limit.
 - **The CPU plays by the same rules.** It solves a ballistic launch angle for
   its current charge, waits for the wobble to line up, and releases the string.
   It never teleports a projectile or sets an impact point.
@@ -87,7 +95,7 @@ A few details worth knowing:
 ## Verification
 
 ```bash
-npm run sim-check          # 60 headless physics/combat/AI assertions
+npm run sim-check          # 66 headless physics/combat/AI assertions
 npm run visual-check       # drives the built game in Chrome, writes shots/
 npm run match-flow-check   # plays a full match to 5 and a deathmatch run (~6 min)
 npm run typecheck

@@ -78,12 +78,19 @@ export class ProjectileSystem {
     return projectile;
   }
 
-  /** Recycles the oldest arrow when a side has too many alive at once. */
+  /**
+   * Recycles the oldest arrow when a side has too many alive at once.
+   *
+   * This must go through `remove`, not `destroy`: `destroy` only takes the body
+   * out of the world and leaves the record in `projectiles`. Trimming that way
+   * never shrinks the list, so once a side had fired `maxPerSide` arrows every
+   * later shot deleted live arrows in flight and that side stopped landing hits.
+   */
   private enforceBudget(owner: Side): void {
     const mine = this.projectiles.filter((p) => p.owner === owner);
     while (mine.length >= PROJECTILE.maxPerSide) {
       const oldest = mine.shift();
-      if (oldest) this.destroy(oldest);
+      if (oldest) this.remove(oldest);
     }
   }
 

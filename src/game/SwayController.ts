@@ -1,7 +1,13 @@
 import Matter from 'matter-js';
 import { RAGDOLL } from '../config/constants';
-import { GRAVITY_FORCE_PER_MASS } from './PhysicsWorld';
 import type { RagdollHandle } from '../types';
+
+/**
+ * Wraps an angle into (-PI, PI]. Done arithmetically rather than with a
+ * subtract-until loop, which never terminates if the simulation ever hands it a
+ * non-finite angle — that would hard-freeze the tab rather than just look wrong.
+ */
+const wrapAngle = (angle: number): number => Math.atan2(Math.sin(angle), Math.cos(angle));
 
 /**
  * The drunkenness.
@@ -22,7 +28,7 @@ export class SwayController {
   private jitterTimers = new Map<RagdollHandle, number>();
 
   /** @param stepMs fixed simulation step in milliseconds */
-  update(handle: RagdollHandle, stepMs: number, enemyX: number): void {
+  update(handle: RagdollHandle, stepMs: number): void {
     if (handle.dead) return;
 
     const dt = stepMs / 1000;
@@ -33,9 +39,7 @@ export class SwayController {
 
     // The archer actively fights to stay upright: a restoring torque toward
     // vertical plus angular drag. Without this the sway just topples them.
-    let lean = torso.angle;
-    while (lean > Math.PI) lean -= Math.PI * 2;
-    while (lean < -Math.PI) lean += Math.PI * 2;
+    const lean = wrapAngle(torso.angle);
     torso.torque += -lean * RAGDOLL.uprightTorque * torso.inertia;
     torso.torque += -torso.angularVelocity * RAGDOLL.uprightDamping * torso.inertia;
 
@@ -47,7 +51,6 @@ export class SwayController {
 
     this.keepStance(handle);
     this.driftBalance(handle);
-    this.swingBowArm(handle, enemyX);
 
     // Sparse random impulses.
     const remaining = (this.jitterTimers.get(handle) ?? 0) - stepMs;
@@ -73,9 +76,7 @@ export class SwayController {
     for (const name of ['upperLegFront', 'upperLegBack', 'lowerLegFront', 'lowerLegBack']) {
       const leg = handle.parts[name];
       if (!leg) continue;
-      let lean = leg.angle;
-      while (lean > Math.PI) lean -= Math.PI * 2;
-      while (lean < -Math.PI) lean += Math.PI * 2;
+      const lean = wrapAngle(leg.angle);
       leg.torque += -lean * RAGDOLL.legUprightTorque * leg.inertia;
       leg.torque += -leg.angularVelocity * RAGDOLL.legUprightDamping * leg.inertia;
     }
@@ -102,38 +103,84 @@ export class SwayController {
   }
 
   /**
-   * Sweeps the bow arm by walking its aim anchor up and down an arc centred on
-   * the shoulder. The anchor lives in torso-local space, so it leans with the
-   * body; the arm chases it and drags the welded bow through a real range of
-   * firing angles. This sweep is the thing the player is timing.
+   * Poses the bow arm. Runs *after* the solver: every body is placed from the
+   * torso's own final transform, so all the arm's joints come out satisfied and
+   * nothing is left for the next step to fight. Posing before the solver instead
+   * left a standing offset and pumped energy into the ragdoll.
+   *
+   * The upper arm, forearm and bow are placed along a ray
+   * from the shoulder whose elevation sweeps up and down, and the arm is eased
+   * toward that pose rather than snapped to it, so an arrow strike still shoves
+   * it visibly before it recovers.
+   *
+   * The angle is measured in the torso's frame, so the body's lean adds to the
+   * arm's own swing — the whole drunken motion feeds the bow, which is the
+   * thing the player is timing. A dead archer is never posed, so the arm simply
+   * goes limp on its joints.
    */
-  private swingBowArm(handle: RagdollHandle, enemyX: number): void {
-    const aim = handle.aim;
-    if (!aim) return;
+  poseBowArm(handle: RagdollHandle, enemyX: number): void {
+    if (handle.dead) return;
+    const torso = handle.torso;
+    const facing = Math.sign(enemyX - torso.position.x) || handle.facing;
 
-    const facing = Math.sign(enemyX - handle.torso.position.x) || handle.facing;
     const swing =
       Math.sin(handle.armPhase) * RAGDOLL.armSwingAmplitude +
       Math.sin(handle.armPhase * RAGDOLL.armSwingWobbleRatio + handle.wobbleSeed) *
         RAGDOLL.armSwingWobble;
-
     const lift = RAGDOLL.armLift + swing;
-    const anchor = (distance: number) => ({
-      x: facing * (3 + distance * Math.cos(lift)),
-      y: -RAGDOLL.torso.h / 2 + 5 - distance * Math.sin(lift),
+
+    // Shoulder, in world space.
+    const cos = Math.cos(torso.angle);
+    const sin = Math.sin(torso.angle);
+    const sx = facing * 3;
+    const sy = -RAGDOLL.torso.h / 2 + 5;
+    const shoulder = {
+      x: torso.position.x + sx * cos - sy * sin,
+      y: torso.position.y + sx * sin + sy * cos,
+    };
+
+    // A limb's long axis is local +Y, so this angle points it forward and
+    // `lift` radians above horizontal, relative to however the torso is leaning.
+    const limbAngle = torso.angle - facing * (Math.PI / 2 + lift);
+    const dir = { x: -Math.sin(limbAngle), y: Math.cos(limbAngle) };
+
+    const upper = handle.parts.upperArmFront;
+    const fore = handle.parts.lowerArmFront;
+    const reachUpper = RAGDOLL.upperArm.h / 2;
+    const reachFore = RAGDOLL.upperArm.h + RAGDOLL.lowerArm.h / 2;
+    const reachHand = RAGDOLL.upperArm.h + RAGDOLL.lowerArm.h;
+
+    this.poseTo(upper, shoulder, dir, reachUpper, limbAngle, torso);
+    this.poseTo(fore, shoulder, dir, reachFore, limbAngle, torso);
+    // The bow's local +X is the shot direction, a quarter turn from the limb.
+    this.poseTo(handle.bow, shoulder, dir, reachHand, limbAngle + Math.PI / 2, torso);
+  }
+
+  /** Eases one body toward a point on the aim ray and a target angle. */
+  private poseTo(
+    body: Matter.Body,
+    shoulder: { x: number; y: number },
+    dir: { x: number; y: number },
+    distance: number,
+    angle: number,
+    torso: Matter.Body,
+  ): void {
+    const rate = RAGDOLL.armTrackRate;
+    const targetX = shoulder.x + dir.x * distance;
+    const targetY = shoulder.y + dir.y * distance;
+
+    Matter.Body.setPosition(body, {
+      x: body.position.x + (targetX - body.position.x) * rate,
+      y: body.position.y + (targetY - body.position.y) * rate,
     });
 
-    aim.pointA = anchor(RAGDOLL.aimReach);
-    if (handle.aimElbow) handle.aimElbow.pointA = anchor(RAGDOLL.upperArm.h);
+    // Always turn the short way round, so the angle can never wind up.
+    const delta = wrapAngle(angle - body.angle);
+    Matter.Body.setAngle(body, body.angle + delta * rate);
 
-    // Take the weight of the bow arm and the bow it carries, so the aim link
-    // only has to steer the arm rather than hold it up.
-    for (const body of [handle.parts.upperArmFront, handle.parts.lowerArmFront, handle.bow]) {
-      Matter.Body.applyForce(body, body.position, {
-        x: 0,
-        y: -body.mass * GRAVITY_FORCE_PER_MASS,
-      });
-    }
+    // Carry the torso's motion so contacts read sensibly, and never spin.
+    Matter.Body.setVelocity(body, { x: torso.velocity.x, y: torso.velocity.y });
+    Matter.Body.setAngularVelocity(body, 0);
   }
 
   forget(handle: RagdollHandle): void {

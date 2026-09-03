@@ -124,9 +124,10 @@ export class GameEngine {
     this.roundOver = false;
     this.deathmatchScore = 0;
     this.encounter = 0;
-    // A moving bow made every shot harder, so the CPU baseline comes up to keep
-    // rounds brisk. Deathmatch still opens gently and ramps from there.
-    this.cpuDifficulty = mode === 'deathmatch' ? 0.3 : 0.55;
+    // Measured against a CPU of the same skill these settle a round in roughly
+    // 15-20 seconds, which leaves a human room to trade shots. Deathmatch opens
+    // gently and ramps from there.
+    this.cpuDifficulty = mode === 'deathmatch' ? 0.25 : 0.45;
 
     const controllers: Record<Side, PlayerState['controller']> =
       mode === 'twoPlayers'
@@ -375,7 +376,11 @@ export class GameEngine {
 
     if (this.simulating) {
       this.elapsed += delta;
-      this.physics.update(delta, (stepMs) => this.simulate(stepMs));
+      this.physics.update(
+        delta,
+        (stepMs) => this.simulate(stepMs),
+        () => this.poseArms(),
+      );
       // Orientation is synced after the solver so arrows never render a step behind.
       this.projectiles.syncOrientation();
       this.particles.update(delta / 1000);
@@ -392,8 +397,8 @@ export class GameEngine {
 
     // Drunken sway for both fighters, always — even a defeated one keeps
     // ragdolling, it just loses its balance spring.
-    this.sway.update(left, stepMs, right.torso.position.x);
-    this.sway.update(right, stepMs, left.torso.position.x);
+    this.sway.update(left, stepMs);
+    this.sway.update(right, stepMs);
 
     for (const side of SIDES) {
       this.bows[side]?.update(stepMs);
@@ -418,6 +423,19 @@ export class GameEngine {
     if (humanBow && this.players.left.controller !== 'cpu' && humanBow.state.phase === 'drawing') {
       audioManager.setDrawCharge(humanBow.state.charge);
     }
+  }
+
+  /**
+   * Places both bow arms after the solver has run, so each arm owns its final
+   * transform for the step and the bow angle the player sees is exactly the one
+   * a shot would use.
+   */
+  private poseArms(): void {
+    const left = this.ragdolls.left;
+    const right = this.ragdolls.right;
+    if (!left || !right) return;
+    this.sway.poseBowArm(left, right.torso.position.x);
+    this.sway.poseBowArm(right, left.torso.position.x);
   }
 
   private headPoint(r: RagdollHandle): Vec2 {
