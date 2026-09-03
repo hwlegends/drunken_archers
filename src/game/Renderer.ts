@@ -374,7 +374,9 @@ export class Renderer {
     ctx.globalAlpha *= 0.18;
     ctx.fillStyle = '#000';
     ctx.beginPath();
-    ctx.ellipse(r.torso.position.x, r.torso.position.y + 60, 26, 7, 0, 0, Math.PI * 2);
+    // The feet sit a leg-and-a-half below the torso centre, whatever the build.
+    const groundY = RAGDOLL.upperLeg.h + RAGDOLL.lowerLeg.h + RAGDOLL.torso.h / 2;
+    ctx.ellipse(r.torso.position.x, r.torso.position.y + groundY, 28, 7, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = r.dead ? 0.92 : 1;
 
@@ -539,28 +541,31 @@ export class Renderer {
     ctx.translate(x, y);
 
     ctx.strokeStyle = '#c9a06a';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.4;
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(length, 0);
     ctx.stroke();
 
-    // Head.
+    // Head and fletching are proportional to the shaft, so an arrow of any
+    // length keeps its silhouette.
+    const tip = length * 0.2;
+    const barb = length * 0.11;
+
     ctx.fillStyle = '#dfe6ee';
     ctx.beginPath();
-    ctx.moveTo(length + 7, 0);
-    ctx.lineTo(length - 3, -3.6);
-    ctx.lineTo(length - 3, 3.6);
+    ctx.moveTo(length + tip * 0.85, 0);
+    ctx.lineTo(length - tip * 0.35, -barb);
+    ctx.lineTo(length - tip * 0.35, barb);
     ctx.closePath();
     ctx.fill();
 
-    // Fletching.
     ctx.fillStyle = fletchColor;
     ctx.beginPath();
     ctx.moveTo(0, 0);
-    ctx.lineTo(9, -4.4);
-    ctx.lineTo(6, 0);
-    ctx.lineTo(9, 4.4);
+    ctx.lineTo(tip * 1.3, -barb * 1.3);
+    ctx.lineTo(tip * 0.85, 0);
+    ctx.lineTo(tip * 1.3, barb * 1.3);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
@@ -573,7 +578,7 @@ export class Renderer {
   private drawHealthBar(ctx: CanvasRenderingContext2D, r: RagdollHandle, player: PlayerState): void {
     const anchor = this.camera.worldToScreen({
       x: r.torso.position.x,
-      y: r.head.position.y - 46,
+      y: r.head.position.y - (RAGDOLL.head.r * 2 + 22),
     });
 
     const w = 104;
@@ -609,7 +614,7 @@ export class Renderer {
   private drawChargeMeter(ctx: CanvasRenderingContext2D, r: RagdollHandle, bow: BowState): void {
     const anchor = this.camera.worldToScreen({
       x: r.torso.position.x,
-      y: r.torso.position.y + 78,
+      y: r.torso.position.y + RAGDOLL.upperLeg.h + RAGDOLL.lowerLeg.h + RAGDOLL.torso.h / 2 + 14,
     });
     const w = 72;
     const h = 8;

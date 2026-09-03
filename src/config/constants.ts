@@ -59,16 +59,16 @@ export const BOW = {
   /** Impulse pushed back into the hands/torso on release. */
   recoilScale: 0.005,
   /** How far ahead of the bow hand the arrow is nocked, in logical px. */
-  nockOffset: 18,
+  nockOffset: 21,
   /** Visual: how far the string is pulled back at full charge. */
-  maxStringPull: 22,
+  maxStringPull: 24,
   /** Bow limb half-length. */
-  limbLength: 26,
+  limbLength: 30,
 } as const;
 
 export const PROJECTILE = {
-  length: 34,
-  thickness: 2.4,
+  length: 42,
+  thickness: 3,
   /** ms after launch during which the shooter cannot be hit by its own arrow. */
   shooterGraceMs: 100,
   /** ms an embedded arrow stays before cleanup. */
@@ -82,12 +82,12 @@ export const PROJECTILE = {
 
 export const RAGDOLL = {
   /** Torso half-extents in logical px. */
-  torso: { w: 15, h: 34 },
-  head: { r: 11 },
-  upperArm: { w: 7, h: 20 },
-  lowerArm: { w: 6, h: 19 },
-  upperLeg: { w: 8.5, h: 23 },
-  lowerLeg: { w: 7.5, h: 22 },
+  torso: { w: 18, h: 41 },
+  head: { r: 13.5 },
+  upperArm: { w: 8.5, h: 21 },
+  lowerArm: { w: 7.5, h: 20 },
+  upperLeg: { w: 10.5, h: 24 },
+  lowerLeg: { w: 9.5, h: 23 },
   density: 0.0016,
   frictionAir: 0.02,
   friction: 0.6,
@@ -102,10 +102,10 @@ export const RAGDOLL = {
    * what makes an archer's position readable: a player can watch the swing and
    * anticipate where the target will be, instead of guessing at loose limbs.
    */
-  swingAmplitude: 0.26,
+  swingAmplitude: 0.38,
   swingPeriod: 2.4,
   /** A small detuned second swing, so it reads as alive but stays predictable. */
-  swingDetune: 0.055,
+  swingDetune: 0.07,
   swingDetuneRatio: 0.41,
 
   /**
