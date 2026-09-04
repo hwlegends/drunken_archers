@@ -13,6 +13,8 @@ drunken wobble is the whole game.
   touchscreen.
 - **Deathmatch** — endless successive opponents; health is restored each
   encounter, difficulty ramps, and the best run is saved.
+- **Online** — the panel on the right lists everyone who has the game open.
+  Challenge one of them and the match starts when they accept.
 
 Headshots are instantly fatal, body and limb hits chip away at 100 health, and
 falling off the arena is just as deadly.
@@ -26,13 +28,36 @@ npm run build      # production build to dist/
 npm run preview    # serve the production build
 ```
 
+## Playing from two computers
+
+```bash
+npm run host       # builds, then serves the game and the lobby on port 8787
+```
+
+It prints a `http://<address>:8787` line for every network interface. Open one
+of those on the other computer — both machines land in the same lobby, see each
+other in the right-hand panel, and either can challenge the other. Nothing else
+has to be configured: the page talks to whatever address it was loaded from.
+
+During development, run `npm run dev` and `npm run lobby` side by side; the dev
+page reaches across to the lobby's own port. Any other arrangement — a
+different port, a tunnel, a reverse proxy — goes in the **Server** field at the
+bottom of the panel, or in a `?lobby=ws://…` query parameter.
+
+The challenger's browser hosts: it runs the simulation and the other one
+replays it. That is worth knowing for one reason — a browser gives no animation
+frames to a hidden tab, so if the host minimises the window or switches tabs the
+match stalls for both players until they come back. The other screen says so
+rather than appearing to have crashed, and play resumes where it left off.
+
 ## Controls
 
 | Context | Input |
 | --- | --- |
 | One Player / Deathmatch | Hold and release `↑`, or press and hold anywhere on the arena |
 | Two Players | `W` for blue, `↑` for orange; on touch, the left and right halves (both at once) |
-| Pause | `Esc` or `P`, or the pause button |
+| Online | `↑`, `W` or `Space` — all three drive your archer, whichever side you were given |
+| Pause | `Esc` or `P`, or the pause button. Online has no pause; the button leaves the match |
 
 ## Architecture
 
@@ -42,6 +67,7 @@ low-frequency events — score, health, round results, phase changes — up to t
 store.
 
 ```
+server/         lobby-server.mjs  serves dist/, lists who is online, relays a match
 src/
   config/       constants.ts   every tunable number, centralised
                 arenas.ts      three themes + platform generation and validation
@@ -54,11 +80,15 @@ src/
                 AIController   ballistic solving; fires the same bow a human does
                 InputManager   keyboard, pointer, touch, focus safety
                 ArenaManager   arena selection and spawns
+                RemoteView     the guest's copy of the host's world
                 CameraController, ParticleSystem, AudioManager, Renderer
                 GameEngine     orchestrates the above and owns the frame loop
+  net/          protocol.ts    the wire format, lobby and match
+                NetClient      one socket, with its own reconnect
+                netStore.ts    lobby state (zustand); match traffic bypasses it
   state/        GameStateMachine  the phase transition table
                 gameStore.ts      low-frequency UI state (zustand) + persistence
-  components/   GameCanvas, HUD, and one component per screen
+  components/   GameCanvas, HUD, LobbyPanel, and one component per screen
 ```
 
 A few details worth knowing:
@@ -104,6 +134,27 @@ A few details worth knowing:
 - **The CPU plays by the same rules.** It solves a ballistic launch angle for
   its current charge, waits for the wobble to line up, and releases the string.
   It never teleports a projectile or sets an impact point.
+- **Online is one browser hosting, not two simulating.** Two Matter worlds
+  stepping the same inputs would have to agree exactly and forever, and the
+  moment they did not there would be no way back. Instead the challenger's
+  browser is the only authority: it owns the physics, the damage and the score,
+  and ships a flattened frame of transforms 30 times a second. The guest runs no
+  solver at all — it rebuilds the same arena from the same seed, writes those
+  transforms into its own bodies, and renders them with the ordinary renderer.
+  A round can never end differently on the two screens because only one of them
+  ever decides anything.
+- **Frames are played back late, on purpose.** `RemoteView` holds roughly two
+  frames of slack and interpolates towards the newest one. Drawing each frame
+  the instant it lands would turn ordinary network jitter into visible stutter.
+- **A remote release is rewound.** The shot direction is the bow angle at the
+  instant of release, so a player on the other end of a 60ms link would
+  otherwise fire along a bow that had already drifted past what they saw. The
+  host keeps 400ms of bow poses and fires a remote shot along the pose from half
+  a round trip ago, capped at 150ms — beyond that the correction is worse than
+  the unfairness.
+- **The lobby relays, it does not arbitrate.** `server/lobby-server.mjs` tracks
+  who is connected and who is challenging whom, and forwards match messages to
+  the one socket paired with the sender. It never reads them.
 - **Every asset is generated.** Characters, arenas, effects and interface art are
   drawn procedurally on canvas or as inline SVG; all audio is synthesised at
   runtime with the Web Audio API. There are no image or audio files in the
@@ -114,6 +165,7 @@ A few details worth knowing:
 ```bash
 npm run sim-check          # 72 headless physics/combat/AI assertions
 npm run visual-check       # drives the built game in Chrome, writes shots/
+npm run online-check       # two browsers play a real match through the real lobby
 npm run match-flow-check   # plays a full match to 5 and a deathmatch run (~6 min)
 npm run typecheck
 ```
@@ -123,6 +175,13 @@ under Node with no DOM, and asserts the behaviour the specification calls for �
 gravity really is 1200 px/s², a headshot really is fatal, an arrow can only
 damage once, pausing cannot jump the clock, and a teardown leaves no stale
 bodies or constraints.
+
+`online-check` starts the lobby, opens two independent browsers, and has them
+find each other, challenge, accept and play. Its last assertion is that both
+screens show the same score after a point — which is only true if the guest's
+button reached the host, the host's world reached the guest, and neither drifted
+in between. It uses two browsers rather than two tabs because a background tab
+gets no animation frames, and the host's animation frame is the match.
 
 ## About the reference material
 

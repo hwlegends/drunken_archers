@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { GameEngine, type EngineEvents } from '../game/GameEngine';
+import { GameEngine, type EngineEvents, type NetLink } from '../game/GameEngine';
 import { audioManager } from '../game/AudioManager';
+import { useNetStore } from '../net/netStore';
 import { useGameStore } from '../state/gameStore';
 import type { GameMode } from '../types';
 
@@ -8,16 +9,29 @@ interface GameCanvasProps {
   mode: GameMode;
   /** Bumping this remounts the match without recreating the canvas element. */
   matchKey: number;
+  onLatency?: (ms: number) => void;
+  onStalled?: (stalled: boolean) => void;
 }
 
 /**
  * Owns the imperative game. The engine is created once per match and talks back
  * to React only through low-frequency store writes — no body transform ever
  * becomes component state.
+ *
+ * An online match adds one more imperative edge: the engine is handed a pipe to
+ * the other computer. Match traffic runs at frame rate, so it deliberately goes
+ * straight from the socket to the engine and never touches React either.
  */
-export function GameCanvas({ mode, matchKey }: GameCanvasProps) {
+export function GameCanvas({ mode, matchKey, onLatency, onStalled }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
+
+  // Read once per match rather than subscribed: the engine is rebuilt from
+  // scratch whenever the pairing changes, and matchKey is what says so.
+  const latencyRef = useRef(onLatency);
+  latencyRef.current = onLatency;
+  const stalledRef = useRef(onStalled);
+  stalledRef.current = onStalled;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -57,12 +71,25 @@ export function GameCanvas({ mode, matchKey }: GameCanvasProps) {
         if (s.phase === 'playing') s.setPhase('paused');
         else if (s.phase === 'paused') s.setPhase('playing');
       },
+      onLatency: (ms) => latencyRef.current?.(ms),
+      onStalled: (stalled) => stalledRef.current?.(stalled),
     };
+
+    const net = useNetStore.getState().match;
+    const link: NetLink | null =
+      mode === 'online' && net
+        ? {
+            role: net.role,
+            side: net.side,
+            send: (message) => useNetStore.getState().relay(message),
+            subscribe: (listener) => useNetStore.getState().subscribePeer(listener),
+          }
+        : null;
 
     const engine = new GameEngine(canvas, events);
     engineRef.current = engine;
     engine.resize();
-    engine.startMatch(mode, store.settings);
+    engine.startMatch(mode, store.settings, link);
 
     const onResize = () => engine.resize();
     window.addEventListener('resize', onResize);
@@ -71,9 +98,11 @@ export function GameCanvas({ mode, matchKey }: GameCanvasProps) {
     const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onResize) : null;
     observer?.observe(canvas);
 
-    // Leaving the tab must pause rather than let the world run on unseen.
+    // Leaving the tab must pause rather than let the world run on unseen —
+    // except online, where the other player's match would run on regardless and
+    // freezing this screen would only hide it.
     const onVisibility = () => {
-      if (!document.hidden) return;
+      if (!document.hidden || mode === 'online') return;
       const s = useGameStore.getState();
       if (s.phase === 'playing') s.setPhase('paused');
     };

@@ -1,6 +1,14 @@
 import Matter from 'matter-js';
 import { BOW, COMBAT, PROJECTILE, RAGDOLL, SKINS, VIEW, type Skin } from '../config/constants';
-import type { ArenaConfig, BowState, PlayerState, ProjectileState, RagdollHandle, Side, Vec2 } from '../types';
+import type {
+  ArenaConfig,
+  BowState,
+  PlayerState,
+  RagdollHandle,
+  RenderableProjectile,
+  Side,
+  Vec2,
+} from '../types';
 import { makeRng } from '../config/arenas';
 import type { CameraController } from './CameraController';
 import { getPartPlugin } from './RagdollFactory';
@@ -26,7 +34,7 @@ export class Renderer {
     ragdolls: Partial<Record<Side, RagdollHandle>>,
     bows: Partial<Record<Side, BowState>>,
     players: Record<Side, PlayerState>,
-    projectiles: readonly ProjectileState[],
+    projectiles: readonly RenderableProjectile[],
     particles: ParticleSystem,
     timeMs: number,
   ): void {
@@ -577,7 +585,7 @@ export class Renderer {
    * Projectiles
    * ---------------------------------------------------------------- */
 
-  private drawArrow(ctx: CanvasRenderingContext2D, p: ProjectileState, skin: Skin): void {
+  private drawArrow(ctx: CanvasRenderingContext2D, p: RenderableProjectile, skin: Skin): void {
     ctx.save();
     ctx.translate(p.body.position.x, p.body.position.y);
     ctx.rotate(p.body.angle);

@@ -45,8 +45,21 @@ export class BowController {
     return true;
   }
 
-  /** Releases the string. Returns the shot's launch data, or null if no shot. */
-  release(): { angle: number; speed: number; charge: number; origin: Vec2 } | null {
+  /**
+   * Releases the string. Returns the shot's launch data, or null if no shot.
+   *
+   * `aim` substitutes an earlier bow pose for the current one. It exists for a
+   * shot fired on another computer: that player let go against the bow they
+   * could see, which is the bow as it stood a round trip ago. Firing along the
+   * pose it has drifted to since would quietly punish them for their
+   * connection, and this game is entirely about the instant of release.
+   */
+  release(aim?: { angle: number; position: Vec2 }): {
+    angle: number;
+    speed: number;
+    charge: number;
+    origin: Vec2;
+  } | null {
     const wasHeld = this.state.inputHeld;
     this.state.inputHeld = false;
     if (!wasHeld || this.state.phase !== 'drawing') return null;
@@ -55,7 +68,7 @@ export class BowController {
       this.state.charge = 0;
       return null;
     }
-    return this.fire();
+    return this.fire(aim);
   }
 
   /** Drops the draw without shooting — used on focus loss and pause. */
@@ -115,16 +128,22 @@ export class BowController {
     };
   }
 
-  private fire(): { angle: number; speed: number; charge: number; origin: Vec2 } {
+  private fire(aim?: { angle: number; position: Vec2 }): {
+    angle: number;
+    speed: number;
+    charge: number;
+    origin: Vec2;
+  } {
     const charge = this.state.charge;
     // Eased so a light tap is meaningfully weak and a full draw is decisive.
     const eased = Math.pow(charge, BOW.chargeEase);
     const speed = BOW.minLaunchSpeed + (BOW.maxLaunchSpeed - BOW.minLaunchSpeed) * eased;
-    const angle = this.ragdoll.bow.angle;
+    const angle = aim ? aim.angle : this.ragdoll.bow.angle;
+    const from = aim ? aim.position : this.ragdoll.bow.position;
 
     const origin = {
-      x: this.ragdoll.bow.position.x + Math.cos(angle) * BOW.nockOffset,
-      y: this.ragdoll.bow.position.y + Math.sin(angle) * BOW.nockOffset,
+      x: from.x + Math.cos(angle) * BOW.nockOffset,
+      y: from.y + Math.sin(angle) * BOW.nockOffset,
     };
 
     this.projectiles.launch(this.state.side, origin, angle, speed);

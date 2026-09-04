@@ -4,7 +4,7 @@
  *
  *   node scripts/visual-check.mjs [outDir]
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -38,21 +38,23 @@ const freePort = await new Promise((res, rej) => {
   });
 });
 
-const server = spawn(
-  process.platform === 'win32' ? 'npx.cmd' : 'npx',
-  ['vite', 'preview', '--port', String(freePort), '--strictPort'],
-  { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' },
-);
+/**
+ * The build is served by the lobby process rather than `vite preview`, because
+ * that is how it is actually served — and because the page opens a lobby socket
+ * on load. Against a server that has no lobby the browser logs a failed
+ * handshake that no script can catch, which would make the console-error check
+ * below permanently noisy.
+ */
+const server = spawn(process.execPath, [resolve(root, 'server/lobby-server.mjs')], {
+  cwd: root,
+  env: { ...process.env, PORT: String(freePort) },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
 const origin = 'http://localhost:' + freePort + '/';
 
-/** On Windows the shell wrapper must be killed as a tree or vite survives. */
 function stopServer() {
   if (server.exitCode !== null || server.signalCode !== null) return;
-  if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/pid', String(server.pid), '/T', '/F'], { stdio: 'ignore' });
-  } else {
-    server.kill('SIGTERM');
-  }
+  server.kill('SIGTERM');
 }
 process.on('exit', stopServer);
 process.on('SIGINT', () => {
@@ -61,11 +63,11 @@ process.on('SIGINT', () => {
 });
 
 await new Promise((resolvePort, reject) => {
-  const timer = setTimeout(() => reject(new Error('preview server did not start')), 30000);
+  const timer = setTimeout(() => reject(new Error('lobby server did not start')), 30000);
   server.stdout.on('data', (chunk) => {
-    if (chunk.toString().includes(String(freePort))) {
+    if (chunk.toString().includes('listening on port')) {
       clearTimeout(timer);
-      setTimeout(resolvePort, 500);
+      setTimeout(resolvePort, 300);
     }
   });
   server.stderr.on('data', (c) => process.stderr.write(c));

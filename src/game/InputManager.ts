@@ -6,12 +6,24 @@ export interface InputHandlers {
   onPauseToggle: () => void;
 }
 
-/** Desktop key bindings from the specification, per mode. */
-const KEY_BINDINGS: Record<GameMode, Record<string, Side>> = {
+/**
+ * Desktop key bindings from the specification, per mode.
+ *
+ * Online is absent on purpose: which archer the keys drive depends on whether
+ * this computer hosts the match, so it resolves against `localSide` instead.
+ */
+const KEY_BINDINGS: Record<Exclude<GameMode, 'online'>, Record<string, Side>> = {
   onePlayer: { ArrowUp: 'left' },
   twoPlayers: { KeyW: 'left', ArrowUp: 'right' },
   deathmatch: { ArrowUp: 'left' },
 };
+
+/**
+ * Online play only ever drives one archer from this keyboard, so every key a
+ * local mode would use is accepted for it. Nobody should have to remember
+ * whether the pairing handed them blue or orange.
+ */
+const ONLINE_KEYS = new Set(['ArrowUp', 'KeyW', 'Space']);
 
 const PAUSE_KEYS = new Set(['Escape', 'KeyP']);
 
@@ -23,6 +35,8 @@ const PAUSE_KEYS = new Set(['Escape', 'KeyP']);
  */
 export class InputManager {
   private mode: GameMode = 'onePlayer';
+  /** The archer this computer drives online. Ignored by the local modes. */
+  private localSide: Side = 'left';
   private enabled = false;
   private surface: HTMLElement | null = null;
 
@@ -81,6 +95,18 @@ export class InputManager {
     this.mode = mode;
   }
 
+  /** Points every online input at one archer, whichever side it was given. */
+  setLocalSide(side: Side): void {
+    this.releaseAll();
+    this.localSide = side;
+  }
+
+  /** The archer a key drives, or undefined if the key is unbound in this mode. */
+  private sideForKey(code: string): Side | undefined {
+    if (this.mode === 'online') return ONLINE_KEYS.has(code) ? this.localSide : undefined;
+    return KEY_BINDINGS[this.mode][code];
+  }
+
   /** Gameplay-only gate. Disabling also drops anything currently held. */
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return;
@@ -109,7 +135,7 @@ export class InputManager {
     // Ignore auto-repeat: a held key must not restart the draw every tick.
     if (event.repeat || this.heldKeys.has(event.code)) return;
 
-    const side = KEY_BINDINGS[this.mode][event.code];
+    const side = this.sideForKey(event.code);
     if (!side) return;
     event.preventDefault();
 
@@ -119,7 +145,7 @@ export class InputManager {
 
   private onKeyUp = (event: KeyboardEvent): void => {
     if (!this.heldKeys.delete(event.code)) return;
-    const side = KEY_BINDINGS[this.mode][event.code];
+    const side = this.sideForKey(event.code);
     if (!side) return;
     event.preventDefault();
     this.release(side, -1);
@@ -157,10 +183,12 @@ export class InputManager {
   };
 
   /**
-   * Solo modes charge from anywhere in the gameplay area. Two-player splits the
-   * surface down the middle, and both halves accept a simultaneous touch.
+   * Solo and online modes charge from anywhere in the gameplay area — online
+   * has only one archer on this screen. Two-player splits the surface down the
+   * middle, and both halves accept a simultaneous touch.
    */
   private sideForPointer(event: PointerEvent): Side {
+    if (this.mode === 'online') return this.localSide;
     if (this.mode !== 'twoPlayers') return 'left';
     const rect = this.surface!.getBoundingClientRect();
     return event.clientX - rect.left < rect.width / 2 ? 'left' : 'right';

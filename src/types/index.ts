@@ -5,7 +5,7 @@ import type { Skin } from '../config/constants';
  * Core enums
  * ------------------------------------------------------------------ */
 
-export type GameMode = 'onePlayer' | 'twoPlayers' | 'deathmatch';
+export type GameMode = 'onePlayer' | 'twoPlayers' | 'deathmatch' | 'online';
 
 export type GamePhase =
   | 'loading'
@@ -21,8 +21,13 @@ export type GamePhase =
 /** Which side of the arena a fighter occupies. Also selects the skin palette. */
 export type Side = 'left' | 'right';
 
-/** Who supplies the charge/release input for a fighter. */
-export type Controller = 'human1' | 'human2' | 'cpu';
+/**
+ * Who supplies the charge/release input for a fighter. `remote` is a human on
+ * another computer: the host applies their presses exactly as it applies its
+ * own, and the guest never runs a controller at all because it only replays
+ * what the host simulated.
+ */
+export type Controller = 'human1' | 'human2' | 'cpu' | 'remote';
 
 export type BodyRegion = 'head' | 'torso' | 'upperArm' | 'lowerArm' | 'upperLeg' | 'lowerLeg';
 
@@ -195,6 +200,16 @@ export interface ProjectileState {
   lifetime: number;
   embedded: boolean;
   embedConstraint: Matter.Constraint | null;
+}
+
+/**
+ * The only part of a projectile the renderer reads. A locally simulated arrow
+ * satisfies it through its Matter body; an arrow replayed from the network is
+ * a plain object with no body behind it at all.
+ */
+export interface RenderableProjectile {
+  owner: Side;
+  body: { position: Vec2; angle: number };
 }
 
 /* ------------------------------------------------------------------ *

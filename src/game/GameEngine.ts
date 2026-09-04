@@ -1,12 +1,15 @@
 import Matter from 'matter-js';
 import { AI, COMBAT, DEATHMATCH_SKINS, MATCH, SKINS, TIME, VIEW, type Skin } from '../config/constants';
+import { BOW_PHASES, type MatchMessage, type MatchRole, type Snapshot } from '../net/protocol';
 import type {
   ArenaConfig,
+  ArenaThemeId,
   GameMode,
   GameSettings,
   HitEvent,
   PlayerState,
   RagdollHandle,
+  RenderableProjectile,
   Side,
   Vec2,
 } from '../types';
@@ -21,6 +24,7 @@ import { ParticleSystem } from './ParticleSystem';
 import { PhysicsWorld } from './PhysicsWorld';
 import { ProjectileSystem } from './ProjectileSystem';
 import { RagdollFactory } from './RagdollFactory';
+import { RemoteView } from './RemoteView';
 import { Renderer } from './Renderer';
 import { SwayController } from './SwayController';
 
@@ -39,10 +43,74 @@ export interface EngineEvents {
   onRoundIntro: () => void;
   onPlay: () => void;
   onPauseRequest: () => void;
+  /** Measured round trip to the opponent. Online only. */
+  onLatency?: (ms: number) => void;
+  /** The host has gone quiet, or has started sending again. Guest only. */
+  onStalled?: (stalled: boolean) => void;
+}
+
+/**
+ * The engine's half of an online match. It knows nothing about lobbies or
+ * WebSockets: something upstream hands it a pipe and which archer is ours.
+ */
+export interface NetLink {
+  role: MatchRole;
+  /** The archer this computer's input drives. */
+  side: Side;
+  send: (message: MatchMessage) => void;
+  subscribe: (listener: (message: MatchMessage) => void) => () => void;
 }
 
 const OTHER: Record<Side, Side> = { left: 'right', right: 'left' };
 const SIDES: Side[] = ['left', 'right'];
+
+/**
+ * How often the host ships a frame of its world.
+ *
+ * 30 Hz against a 60 Hz simulation: the guest interpolates between frames, so
+ * doubling the rate would double the traffic to remove a smoothing step that is
+ * not visible anyway.
+ */
+const SNAPSHOT_INTERVAL_MS = 1000 / 30;
+
+/** How often each side probes the round trip. */
+const PING_INTERVAL_MS = 1000;
+
+/** How often a guest with no arena yet asks the host where the match is. */
+const READY_RETRY_MS = 700;
+
+/**
+ * Silence from the host that counts as the match having stopped. Frames come
+ * 30 times a second, so this is 45 of them; short enough to explain a freeze
+ * quickly, long enough that a hiccup does not flash a warning.
+ */
+const STALL_AFTER_MS = 1500;
+
+/** How far back the host remembers a bow pose, for a remote player's release. */
+const AIM_HISTORY_MS = 400;
+
+/**
+ * Ceiling on how far a remote release is rewound. Past this the connection is
+ * bad enough that honouring the full delay would let a player shoot at an
+ * opponent who has visibly moved on, which is worse than the unfairness it fixes.
+ */
+const MAX_REWIND_MS = 150;
+
+/** One remembered bow pose: where the bow was and where it pointed. */
+interface AimSample {
+  at: number;
+  angle: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * Snapshot precision. A tenth of a pixel and a thousandth of a radian are both
+ * well under what a 1280-wide viewport can show, and rounding there is most of
+ * the difference between a compact frame and one full of 17-digit doubles.
+ */
+const round1 = (value: number): number => Math.round(value * 10) / 10;
+const round3 = (value: number): number => Math.round(value * 1000) / 1000;
 
 export class GameEngine {
   private readonly physics = new PhysicsWorld();
@@ -87,6 +155,21 @@ export class GameEngine {
 
   private disposeCollision: (() => void) | null = null;
 
+  /* ---- online ----------------------------------------------------- */
+
+  private net: NetLink | null = null;
+  private disposeNet: (() => void) | null = null;
+  /** The guest's replica of the host's world. Unused when hosting. */
+  private readonly remote = new RemoteView();
+  private snapshotSeq = 0;
+  private lastSnapshotAt = 0;
+  private lastPingAt = 0;
+  private lastReadyAt = 0;
+  private rttMs = 0;
+  private stalled = false;
+  /** Recent bow poses for the remote archer, so its release can be rewound. */
+  private aimHistory: AimSample[] = [];
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly events: EngineEvents,
@@ -102,8 +185,14 @@ export class GameEngine {
     this.input = new InputManager({
       onPress: (side) => this.pressSide(side),
       onRelease: (side) => this.releaseSide(side),
-      onPauseToggle: () => this.events.onPauseRequest(),
+      // There is nothing to pause online: freezing one browser would not stop
+      // the other, and the host's world is the match.
+      onPauseToggle: () => {
+        if (this.mode !== 'online') this.events.onPauseRequest();
+      },
     });
+
+    this.remote.onBowEvent = (event) => this.playBowSound(event);
 
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.disposeCollision = this.physics.onCollisionStart((event) => {
@@ -117,22 +206,31 @@ export class GameEngine {
    * Match lifecycle
    * ---------------------------------------------------------------- */
 
-  startMatch(mode: GameMode, settings: GameSettings): void {
+  startMatch(mode: GameMode, settings: GameSettings, net: NetLink | null = null): void {
     this.clearTimers();
     this.mode = mode;
     this.settings = settings;
     this.roundOver = false;
     this.deathmatchScore = 0;
     this.encounter = 0;
+
+    this.attachNet(net);
     // Measured against a CPU of the same skill these settle a round in roughly
     // 15-20 seconds, which leaves a human room to trade shots. Deathmatch opens
     // gently and ramps from there.
     this.cpuDifficulty = mode === 'deathmatch' ? 0.25 : 0.45;
 
+    // Online, one archer is driven from this keyboard and the other by someone
+    // else's. The guest marks both remote: it simulates neither, it only
+    // replays what the host sends and forwards its own button.
     const controllers: Record<Side, PlayerState['controller']> =
       mode === 'twoPlayers'
         ? { left: 'human1', right: 'human2' }
-        : { left: 'human1', right: 'cpu' };
+        : mode === 'online' && net
+          ? net.role === 'host'
+            ? { left: net.side === 'left' ? 'human1' : 'remote', right: net.side === 'right' ? 'human1' : 'remote' }
+            : { left: 'remote', right: 'remote' }
+          : { left: 'human1', right: 'cpu' };
 
     for (const side of SIDES) {
       this.players[side] = {
@@ -147,12 +245,18 @@ export class GameEngine {
 
     this.arenas.reset();
     this.input.attach(this.canvas, mode);
-    this.events.onScores({ left: 0, right: 0 });
+    if (net) this.input.setLocalSide(net.side);
+    this.emit('onScores', { left: 0, right: 0 });
 
     if (mode === 'deathmatch') {
       this.buildEncounter(true);
       this.beginPlay();
       this.events.onDeathmatchScore(0, 0);
+    } else if (net?.role === 'guest') {
+      // Nothing exists until the host says which arena it built.
+      this.simulating = true;
+      this.interactive = true;
+      this.input.setEnabled(true);
     } else {
       this.beginRound(true);
     }
@@ -166,8 +270,8 @@ export class GameEngine {
     this.simulating = true;
     this.interactive = false;
     this.input.setEnabled(false);
-    this.events.onRoundIntro();
-    this.events.onAnnounce('fight', 'FIGHT!', MATCH.roundIntroMs);
+    this.emit('onRoundIntro');
+    this.emit('onAnnounce', 'fight', 'FIGHT!', MATCH.roundIntroMs);
 
     this.after(MATCH.roundIntroMs, () => this.beginPlay());
   }
@@ -177,15 +281,22 @@ export class GameEngine {
     this.interactive = true;
     this.input.setEnabled(true);
     this.physics.resetClock();
-    this.events.onPlay();
+    this.emit('onPlay');
   }
 
-  /** Tears down the previous encounter and constructs the next one. */
-  private buildEncounter(newTheme: boolean): void {
+  /**
+   * Tears down the previous encounter and constructs the next one.
+   *
+   * `recipe` reproduces an exact arena instead of rolling a fresh one, which is
+   * how an online guest ends up standing in the same place as the host.
+   */
+  private buildEncounter(newTheme: boolean, recipe?: { theme: ArenaThemeId; seed: number }): void {
     this.teardownFighters();
 
-    const arena = this.arenas.next({ newTheme });
+    const arena = this.arenas.next(recipe ? { newTheme: false, ...recipe } : { newTheme });
     this.arena = arena;
+    this.aimHistory.length = 0;
+    this.remote.reset();
     this.physics.buildTerrain(arena);
     this.projectiles.setArena(arena);
     this.camera.setArena(arena);
@@ -210,7 +321,11 @@ export class GameEngine {
       this.players[side].alive = true;
     }
 
-    this.events.onHealth(COMBAT.maxHealth, COMBAT.maxHealth);
+    // The guest must be standing in this arena before the first frame of it
+    // arrives, so the recipe goes out ahead of any snapshot.
+    if (this.net?.role === 'host') this.sendBegin();
+
+    this.emit('onHealth', COMBAT.maxHealth, COMBAT.maxHealth);
   }
 
   /** Deathmatch rotates opponent palettes; standard modes stay blue vs orange. */
@@ -248,10 +363,21 @@ export class GameEngine {
 
     if (hit.headshot) {
       audioManager.play('headshot');
-      this.events.onAnnounce('headshot', 'HEADSHOT!', 1300, hit.shooter);
+      this.emit('onAnnounce', 'headshot', 'HEADSHOT!', 1300, hit.shooter);
     }
 
-    this.events.onHealth(this.players.left.health, this.players.right.health);
+    // Blood, shake and the impact crack are local effects the guest cannot
+    // derive from transforms alone, so the one that landed them is relayed.
+    this.net?.send({
+      k: 'hit',
+      x: hit.point.x,
+      y: hit.point.y,
+      dir: direction,
+      headshot: hit.headshot,
+      fatal: hit.fatal,
+    });
+
+    this.emit('onHealth', this.players.left.health, this.players.right.health);
   }
 
   private handleDefeat(loser: Side, byHeadshot: boolean, byFall: boolean): void {
@@ -276,14 +402,14 @@ export class GameEngine {
     const scores = { left: this.players.left.score, right: this.players.right.score };
 
     audioManager.play('point');
-    this.events.onAnnounce('point', SKINS[winner].name.toUpperCase() + ' SCORES', MATCH.roundResultDelayMs, winner);
-    this.events.onRoundOver(winner, loser, byHeadshot, byFall, scores);
-    this.events.onScores(scores);
+    this.emit('onAnnounce', 'point', SKINS[winner].name.toUpperCase() + ' SCORES', MATCH.roundResultDelayMs, winner);
+    this.emit('onRoundOver', winner, loser, byHeadshot, byFall, scores);
+    this.emit('onScores', scores);
 
     this.after(MATCH.roundResultDelayMs, () => {
       if (this.players[winner].score >= MATCH.targetScore) {
         audioManager.play('victory');
-        this.events.onMatchOver(winner);
+        this.emit('onMatchOver', winner);
         this.simulating = true;
       } else {
         this.beginRound(false);
@@ -322,25 +448,76 @@ export class GameEngine {
    * ---------------------------------------------------------------- */
 
   private pressSide(side: Side): void {
+    // Online, this computer only ever has one archer to press for, and a guest
+    // has no bow of its own to draw: it sends the button and waits to see it.
+    if (this.net) {
+      if (side !== this.net.side) return;
+      if (this.net.role === 'guest') {
+        this.net.send({ k: 'in', down: true });
+        return;
+      }
+    }
+    this.applyPress(side, true);
+  }
+
+  private releaseSide(side: Side): void {
+    if (this.net) {
+      if (side !== this.net.side) return;
+      if (this.net.role === 'guest') {
+        this.net.send({ k: 'in', down: false });
+        return;
+      }
+    }
+    this.applyRelease(side, true);
+  }
+
+  /**
+   * Starts a draw, whoever asked for it. `local` distinguishes this computer's
+   * player from the one on the other end: the bow-creak synth follows a single
+   * charge value, so only the local draw may drive it.
+   */
+  private applyPress(side: Side, local: boolean): void {
     if (!this.interactive) return;
     if (this.players[side].controller === 'cpu') return;
     const bow = this.bows[side];
     if (!bow) return;
-    if (bow.press()) {
+    if (bow.press() && local) {
       audioManager.play('bowDraw');
     }
   }
 
-  private releaseSide(side: Side): void {
+  private applyRelease(side: Side, local: boolean): void {
     const bow = this.bows[side];
     if (!bow) return;
     if (this.players[side].controller === 'cpu') return;
-    const shot = bow.release();
-    audioManager.stopDraw();
+
+    const shot = bow.release(local ? undefined : this.rewoundAim());
+    if (local) audioManager.stopDraw();
     if (shot) {
       audioManager.play('bowRelease');
       audioManager.play('arrowFlight');
     }
+  }
+
+  /**
+   * The remote archer's bow as it stood one one-way trip ago, which is the bow
+   * that player was actually looking at when they let go. Falls back to the
+   * live pose when there is no history yet or the link is fast enough that the
+   * difference is nothing.
+   */
+  private rewoundAim(): { angle: number; position: Vec2 } | undefined {
+    const rewind = Math.min(MAX_REWIND_MS, this.rttMs / 2);
+    if (rewind < TIME.step || !this.aimHistory.length) return undefined;
+
+    const at = performance.now() - rewind;
+    // Samples are appended in order, so the last one at or before `at` is the
+    // newest pose that player could possibly have seen.
+    let chosen = this.aimHistory[0];
+    for (const sample of this.aimHistory) {
+      if (sample.at > at) break;
+      chosen = sample;
+    }
+    return { angle: chosen.angle, position: { x: chosen.x, y: chosen.y } };
   }
 
   /* ---------------------------------------------------------------- *
@@ -371,7 +548,9 @@ export class GameEngine {
     // the simulation when the page comes back.
     const delta = Math.min(rawDelta, TIME.maxFrameDelta);
 
-    if (this.simulating) {
+    if (this.net?.role === 'guest') {
+      this.guestFrame(now, delta);
+    } else if (this.simulating) {
       this.elapsed += delta;
       this.physics.update(
         delta,
@@ -384,8 +563,63 @@ export class GameEngine {
       this.camera.update(delta / 1000);
     }
 
+    if (this.net) this.netFrame(now);
+
     this.render();
   };
+
+  /**
+   * The guest's frame. No solver runs and no rule is evaluated here — the
+   * host's transforms are written into the local bodies and everything else
+   * (camera, particles, the renderer) behaves exactly as it does offline.
+   */
+  private guestFrame(now: number, delta: number): void {
+    this.elapsed += delta;
+    this.remote.apply(now, this.ragdolls);
+
+    const left = this.ragdolls.left;
+    const right = this.ragdolls.right;
+    if (left && right && this.arena) {
+      this.camera.follow(this.headPoint(left), this.headPoint(right), this.arena);
+    }
+    this.particles.update(delta / 1000);
+    this.camera.update(delta / 1000);
+  }
+
+  /** Snapshots and the latency probe, on whichever end owns them. */
+  private netFrame(now: number): void {
+    const net = this.net;
+    if (!net) return;
+
+    if (now - this.lastPingAt >= PING_INTERVAL_MS) {
+      this.lastPingAt = now;
+      net.send({ k: 'ping', t: now });
+    }
+
+    if (net.role === 'host') {
+      if (this.arena && now - this.lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
+        this.lastSnapshotAt = now;
+        net.send({ k: 'snap', s: this.buildSnapshot() });
+      }
+      return;
+    }
+
+    // Both engines are built at the same instant, so the host's opening message
+    // can land before this one is listening. Asking again until an arena exists
+    // costs one message a second and removes the race entirely.
+    if (!this.arena && now - this.lastReadyAt >= READY_RETRY_MS) {
+      this.lastReadyAt = now;
+      net.send({ k: 'ready' });
+    }
+
+    // Reported only when it changes, so a stalled match is one store write
+    // rather than one per frame.
+    const stalled = !!this.arena && this.remote.silenceMs(now) > STALL_AFTER_MS;
+    if (stalled !== this.stalled) {
+      this.stalled = stalled;
+      this.events.onStalled?.(stalled);
+    }
+  }
 
   private simulate(stepMs: number): void {
     const left = this.ragdolls.left;
@@ -415,8 +649,16 @@ export class GameEngine {
     this.camera.follow(this.headPoint(left), this.headPoint(right), this.arena);
 
     // Feed the live draw into the bow-creak synth for the local human only.
-    const humanBow = this.bows.left;
-    if (humanBow && this.players.left.controller !== 'cpu' && humanBow.state.phase === 'drawing') {
+    // Online that is whichever archer this computer was given, not always blue.
+    const localSide: Side = this.net ? this.net.side : 'left';
+    const humanBow = this.bows[localSide];
+    const controller = this.players[localSide].controller;
+    if (
+      humanBow &&
+      controller !== 'cpu' &&
+      controller !== 'remote' &&
+      humanBow.state.phase === 'drawing'
+    ) {
       audioManager.setDrawCharge(humanBow.state.charge);
     }
   }
@@ -432,6 +674,20 @@ export class GameEngine {
     if (!left || !right) return;
     this.sway.pose(left, right.torso.position.x);
     this.sway.pose(right, left.torso.position.x);
+
+    // Recorded after posing, because posing is what sets the bow angle a shot
+    // would use, and that is exactly the value a remote release rewinds to.
+    if (this.net?.role === 'host') this.recordAim(OTHER[this.net.side]);
+  }
+
+  private recordAim(side: Side): void {
+    const bow = this.ragdolls[side]?.bow;
+    if (!bow) return;
+    const at = performance.now();
+    this.aimHistory.push({ at, angle: bow.angle, x: bow.position.x, y: bow.position.y });
+    while (this.aimHistory.length && at - this.aimHistory[0].at > AIM_HISTORY_MS) {
+      this.aimHistory.shift();
+    }
   }
 
   private headPoint(r: RagdollHandle): Vec2 {
@@ -454,10 +710,14 @@ export class GameEngine {
     const scale = width / VIEW.width;
     ctx.scale(scale, scale);
 
-    const bowStates = {
-      left: this.bows.left?.state,
-      right: this.bows.right?.state,
-    };
+    // A guest has no bows and no arrows of its own; both come off the wire.
+    const guest = this.net?.role === 'guest';
+    const bowStates = guest
+      ? this.remote.bows
+      : { left: this.bows.left?.state, right: this.bows.right?.state };
+    const arrows: readonly RenderableProjectile[] = guest
+      ? this.remote.arrows
+      : this.projectiles.list();
 
     this.renderer.render(
       ctx,
@@ -465,7 +725,7 @@ export class GameEngine {
       this.ragdolls,
       bowStates,
       this.players,
-      this.projectiles.list(),
+      arrows,
       this.particles,
       this.elapsed,
     );
@@ -486,6 +746,208 @@ export class GameEngine {
       this.canvas.height = height;
     }
     this.render();
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Online
+   * ---------------------------------------------------------------- */
+
+  private attachNet(net: NetLink | null): void {
+    this.disposeNet?.();
+    this.disposeNet = null;
+    this.net = net;
+    this.remote.reset();
+    this.aimHistory.length = 0;
+    this.snapshotSeq = 0;
+    this.lastSnapshotAt = 0;
+    this.lastPingAt = 0;
+    this.lastReadyAt = 0;
+    this.rttMs = 0;
+    this.stalled = false;
+    if (net) this.disposeNet = net.subscribe((message) => this.handleNetMessage(message));
+  }
+
+  /**
+   * Sends an engine event to React and, when hosting, to the other computer as
+   * well. Both screens end up driving their store through the same handler with
+   * the same arguments, so a scoreboard or a banner cannot drift between them.
+   */
+  private emit<K extends keyof EngineEvents>(
+    name: K,
+    ...args: Parameters<NonNullable<EngineEvents[K]>>
+  ): void {
+    (this.events[name] as ((...a: unknown[]) => void) | undefined)?.(...args);
+    if (this.net?.role === 'host') this.net.send({ k: 'ev', n: name, a: args });
+  }
+
+  /**
+   * One frame of the host's world, flattened.
+   *
+   * Both computers build their archers from the same factory in the same order,
+   * so a body's index is enough to address it and no identifier has to travel.
+   * Values are rounded because a tenth of a pixel is far below what anyone can
+   * see and full doubles would roughly double the frame.
+   */
+  private buildSnapshot(): Snapshot {
+    const bodies: number[] = [];
+    for (const side of SIDES) {
+      const ragdoll = this.ragdolls[side];
+      if (!ragdoll) continue;
+      for (const body of ragdoll.bodies) {
+        bodies.push(round1(body.position.x), round1(body.position.y), round3(body.angle));
+      }
+    }
+
+    const arrows: number[] = [];
+    for (const projectile of this.projectiles.list()) {
+      arrows.push(
+        projectile.id,
+        projectile.owner === 'left' ? 1 : 0,
+        round1(projectile.body.position.x),
+        round1(projectile.body.position.y),
+        round3(projectile.body.angle),
+      );
+    }
+
+    const bow = (side: Side): [number, number] => {
+      const state = this.bows[side]?.state;
+      if (!state) return [BOW_PHASES.indexOf('ready'), 0];
+      return [BOW_PHASES.indexOf(state.phase), round3(state.charge)];
+    };
+    const [leftPhase, leftCharge] = bow('left');
+    const [rightPhase, rightCharge] = bow('right');
+
+    return {
+      n: ++this.snapshotSeq,
+      b: bodies,
+      a: arrows,
+      bw: [leftPhase, leftCharge, rightPhase, rightCharge],
+      d: [this.ragdolls.left?.dead ? 1 : 0, this.ragdolls.right?.dead ? 1 : 0],
+    };
+  }
+
+  private sendBegin(): void {
+    const { theme, seed } = this.arenas.recipe;
+    this.net?.send({
+      k: 'begin',
+      theme,
+      seed,
+      scores: { left: this.players.left.score, right: this.players.right.score },
+    });
+  }
+
+  private handleNetMessage(message: MatchMessage): void {
+    if (this.destroyed || !this.net) return;
+
+    switch (message.k) {
+      case 'ping':
+        // Echoed with the sender's own clock reading, so neither side ever has
+        // to know what time it is on the other.
+        this.net.send({ k: 'pong', t: message.t });
+        break;
+
+      case 'pong': {
+        const sample = performance.now() - message.t;
+        // Smoothed: a single delayed reply should not swing the rewind window.
+        this.rttMs = this.rttMs === 0 ? sample : this.rttMs + (sample - this.rttMs) * 0.25;
+        this.events.onLatency?.(Math.round(this.rttMs));
+        break;
+      }
+
+      case 'in':
+        // Only the host acts on a button, and only ever for the other archer.
+        if (this.net.role !== 'host') break;
+        if (message.down) this.applyPress(OTHER[this.net.side], false);
+        else this.applyRelease(OTHER[this.net.side], false);
+        break;
+
+      case 'ready': {
+        // Catches a guest that came up after the round had already started, or
+        // came back after a reload. Everything it needs is re-stated, in the
+        // order it would have arrived the first time.
+        if (this.net.role !== 'host' || !this.arena) break;
+        this.sendBegin();
+        const scores = { left: this.players.left.score, right: this.players.right.score };
+        this.net.send({ k: 'ev', n: 'onScores', a: [scores] });
+        this.net.send({
+          k: 'ev',
+          n: 'onHealth',
+          a: [this.players.left.health, this.players.right.health],
+        });
+        this.net.send({ k: 'ev', n: this.interactive ? 'onPlay' : 'onRoundIntro', a: [] });
+        break;
+      }
+
+      case 'begin':
+        if (this.net.role !== 'guest') break;
+        this.players.left.score = message.scores.left;
+        this.players.right.score = message.scores.right;
+        this.buildEncounter(false, { theme: message.theme, seed: message.seed });
+        break;
+
+      case 'snap':
+        if (this.net.role !== 'guest') break;
+        this.remote.push(message.s, performance.now());
+        break;
+
+      case 'hit':
+        if (this.net.role !== 'guest') break;
+        this.particles.impact({ x: message.x, y: message.y }, message.dir, this.settings.reducedBlood);
+        this.camera.addShake(message.headshot ? 13 : 6);
+        audioManager.play('impact');
+        if (!message.fatal) audioManager.play('reaction');
+        if (message.headshot) audioManager.play('headshot');
+        break;
+
+      case 'ev':
+        if (this.net.role !== 'guest') break;
+        this.applyRemoteEvent(message.n, message.a);
+        break;
+    }
+  }
+
+  /**
+   * Replays one of the host's engine events. The store update is the same call
+   * the host made; the extra work here is the state the *renderer* reads
+   * directly off the engine rather than out of the store.
+   */
+  private applyRemoteEvent(name: string, args: unknown[]): void {
+    if (name === 'onHealth') {
+      // Health bars are drawn on the canvas from these, not from the store.
+      this.players.left.health = args[0] as number;
+      this.players.right.health = args[1] as number;
+    } else if (name === 'onScores') {
+      const scores = args[0] as Record<Side, number>;
+      this.players.left.score = scores.left;
+      this.players.right.score = scores.right;
+    } else if (name === 'onPlay') {
+      this.interactive = true;
+      this.input.setEnabled(true);
+    } else if (name === 'onRoundIntro') {
+      this.interactive = false;
+      this.input.setEnabled(false);
+    } else if (name === 'onRoundOver' || name === 'onMatchOver') {
+      this.interactive = false;
+      this.input.setEnabled(false);
+      audioManager.stopDraw();
+    }
+
+    const handler = this.events[name as keyof EngineEvents] as
+      | ((...a: unknown[]) => void)
+      | undefined;
+    handler?.(...args);
+  }
+
+  /** Draw and release sounds for a match this computer is only watching. */
+  private playBowSound(event: 'draw' | 'fire'): void {
+    if (this.net?.role !== 'guest') return;
+    if (event === 'draw') {
+      audioManager.play('bowDraw');
+      return;
+    }
+    audioManager.stopDraw();
+    audioManager.play('bowRelease');
+    audioManager.play('arrowFlight');
   }
 
   /* ---------------------------------------------------------------- *
@@ -540,6 +1002,10 @@ export class GameEngine {
   /** Leaves the match but keeps the engine reusable for a rematch. */
   endMatch(): void {
     this.clearTimers();
+    this.disposeNet?.();
+    this.disposeNet = null;
+    this.net = null;
+    this.remote.reset();
     this.simulating = false;
     this.interactive = false;
     this.input.setEnabled(false);
@@ -558,6 +1024,9 @@ export class GameEngine {
     this.destroyed = true;
     this.stop();
     this.clearTimers();
+    this.disposeNet?.();
+    this.disposeNet = null;
+    this.net = null;
     this.input.detach();
     this.teardownFighters();
     this.disposeCollision?.();

@@ -48,6 +48,11 @@ export function MainMenu({ onStart, onHowToPlay, onFullscreen, isFullscreen }: M
         </button>
       </div>
 
+      <p className="menu__online">
+        Playing someone on another computer? Challenge them from the players
+        panel — no menu button, the match starts when they accept.
+      </p>
+
       <div className="toggles">
         {TOGGLES.map((t) => (
           <button

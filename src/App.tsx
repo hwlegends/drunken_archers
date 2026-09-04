@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GameCanvas } from './components/GameCanvas';
+import { LobbyPanel } from './components/LobbyPanel';
 import { HUD } from './components/hud/HUD';
 import { DeathmatchResult } from './components/screens/DeathmatchResult';
 import { Instructions } from './components/screens/Instructions';
@@ -9,12 +10,16 @@ import { MatchResult } from './components/screens/MatchResult';
 import { PauseOverlay } from './components/screens/PauseOverlay';
 import { RotatePrompt } from './components/screens/RotatePrompt';
 import { audioManager } from './game/AudioManager';
+import { useNetStore } from './net/netStore';
 import { showsArena } from './state/GameStateMachine';
 import { useGameStore } from './state/gameStore';
 import type { GameMode } from './types';
 
 /** Below this height in portrait we ask a phone to turn sideways. */
 const PORTRAIT_MIN_HEIGHT = 520;
+
+/** Under this width the panel would cost the arena more than it is worth. */
+const PANEL_MIN_WIDTH = 900;
 
 function useIsPortraitPhone(): boolean {
   const [portrait, setPortrait] = useState(false);
@@ -64,7 +69,12 @@ export default function App() {
   const deathmatchScore = useGameStore((s) => s.deathmatchScore);
   const bestScore = useGameStore((s) => s.stats.bestDeathmatchScore);
 
+  const netMatch = useNetStore((s) => s.match);
+
   const [matchKey, setMatchKey] = useState(0);
+  const [panelHidden, setPanelHidden] = useState(() => window.innerWidth < PANEL_MIN_WIDTH);
+  const [latency, setLatency] = useState<number | null>(null);
+  const [stalled, setStalled] = useState(false);
   const portrait = useIsPortraitPhone();
   const [isFullscreen, toggleFullscreen] = useFullscreen();
   const previousMode = useRef<GameMode>('onePlayer');
@@ -85,6 +95,13 @@ export default function App() {
       }
     }, 110);
     return () => clearInterval(timer);
+  }, []);
+
+  // The lobby connects on load and stays connected, so this browser is listed
+  // for others the whole time it has the game open — not only while looking at
+  // the panel.
+  useEffect(() => {
+    useNetStore.getState().connect();
   }, []);
 
   /* ---- audio ----------------------------------------------------- */
@@ -140,12 +157,24 @@ export default function App() {
     store.clearAnnouncements();
     store.setPhase('menu');
     store.resetMatchState();
+    // Walking away from an online match releases the other player too.
+    useNetStore.getState().leaveMatch();
+    setLatency(null);
+    setStalled(false);
   }, [click]);
 
-  const rematch = useCallback(() => startMatch(previousMode.current), [startMatch]);
+  const rematch = useCallback(() => {
+    const net = useNetStore.getState();
+    // Online, the other browser has to tear down and rebuild alongside this
+    // one; only the host may call it, because only the host can seed the arena.
+    if (net.match?.role === 'host') net.relay({ k: 'restart' });
+    startMatch(previousMode.current);
+  }, [startMatch]);
 
   const togglePause = useCallback(() => {
     const store = useGameStore.getState();
+    // Online has nothing to pause: the other computer keeps simulating.
+    if (store.mode === 'online') return;
     if (store.phase === 'playing') {
       audioManager.play('uiClick');
       store.setPhase('paused');
@@ -155,15 +184,67 @@ export default function App() {
     }
   }, []);
 
+  /* ---- online match lifecycle ------------------------------------ */
+
+  // A pairing arriving from the lobby is what starts an online match; there is
+  // no menu button for it, because there is nothing to choose.
+  useEffect(() => {
+    if (!netMatch) return;
+    const store = useGameStore.getState();
+    store.clearAnnouncements();
+    store.startMatch('online');
+    previousMode.current = 'online';
+    setLatency(null);
+    setStalled(false);
+    setMatchKey((k) => k + 1);
+    store.forcePhase('roundIntro');
+  }, [netMatch]);
+
+  // The other player leaving, or dropping, ends it from here as well.
+  useEffect(() => {
+    if (netMatch) return;
+    const store = useGameStore.getState();
+    if (store.mode !== 'online' || store.phase === 'menu' || store.phase === 'loading') return;
+    store.clearAnnouncements();
+    store.forcePhase('menu');
+    store.resetMatchState();
+    setLatency(null);
+    setStalled(false);
+  }, [netMatch]);
+
+  // A rematch is the host rebuilding its match; this side has to rebuild too.
+  useEffect(
+    () =>
+      useNetStore.getState().subscribePeer((message) => {
+        if (message.k !== 'restart') return;
+        const store = useGameStore.getState();
+        if (useNetStore.getState().match?.role !== 'guest') return;
+        store.clearAnnouncements();
+        store.startMatch('online');
+        setStalled(false);
+        setMatchKey((k) => k + 1);
+        store.forcePhase('roundIntro');
+      }),
+    [],
+  );
+
   if (portrait) return <RotatePrompt />;
 
   const arenaVisible = showsArena(phase);
   const twoPlayer = mode === 'twoPlayers';
+  const online = mode === 'online';
 
   return (
     <div className="shell">
       <div className="stage">
-        {arenaVisible && <GameCanvas mode={mode} matchKey={matchKey} />}
+        {arenaVisible && (
+          <GameCanvas
+            mode={mode}
+            matchKey={matchKey}
+            onLatency={online ? setLatency : undefined}
+            onStalled={online ? setStalled : undefined}
+          />
+        )}
 
         {phase === 'loading' && <LoadingScreen progress={loadProgress} />}
 
@@ -194,7 +275,10 @@ export default function App() {
         {arenaVisible && (
           <HUD
             mode={mode}
-            onPause={togglePause}
+            onPause={online ? goHome : togglePause}
+            opponent={netMatch?.opponent.name}
+            latency={latency}
+            stalled={online && stalled}
             showHint={phase === 'roundIntro' || (phase === 'playing' && scores.left + scores.right === 0)}
           />
         )}
@@ -208,6 +292,9 @@ export default function App() {
             winner={matchWinner}
             scores={scores}
             twoPlayer={twoPlayer}
+            localSide={netMatch?.side}
+            // Only the host can start another: it is the one that seeds the arena.
+            canRematch={!online || netMatch?.role === 'host'}
             onRematch={rematch}
             onHome={goHome}
           />
@@ -222,6 +309,16 @@ export default function App() {
           />
         )}
       </div>
+
+      <LobbyPanel
+        collapsed={panelHidden}
+        onToggle={() => {
+          click();
+          setPanelHidden((v) => !v);
+        }}
+        latency={latency}
+        onLeaveMatch={goHome}
+      />
     </div>
   );
 }
