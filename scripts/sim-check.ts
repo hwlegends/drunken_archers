@@ -16,6 +16,7 @@ import { CombatSystem } from '../src/game/CombatSystem';
 import { PhysicsWorld, toSecondVelocity, toStepVelocity } from '../src/game/PhysicsWorld';
 import { ProjectileSystem } from '../src/game/ProjectileSystem';
 import { RagdollFactory } from '../src/game/RagdollFactory';
+import { stepBallistic } from '../src/game/RemoteView';
 import { SwayController } from '../src/game/SwayController';
 import { BOW_PHASES, decodeSnapshot, encodeSnapshot } from '../src/net/protocol';
 import { canTransition, isSimulating, showsArena } from '../src/state/GameStateMachine';
@@ -898,10 +899,59 @@ section('12. Sidestep');
 }
 
 /* ------------------------------------------------------------------ *
- * 13. Snapshot codec — the only thing an online guest ever sees
+ * 13. Predicted arrows — what an online guest sees before it is told
  * ------------------------------------------------------------------ */
 
-section('13. Snapshot codec');
+section('13. Shot prediction');
+{
+  const rig = makeRig('desert', 8080);
+
+  // Fired from the middle of the arena, clear of both platforms and both
+  // archers, so nothing interrupts the flight being compared.
+  const origin = { x: 620, y: 150 };
+  const angle = -0.3;
+  const speed = 700;
+
+  const real = rig.projectiles.launch('left', origin, angle, speed);
+  const ghost = {
+    position: { x: origin.x, y: origin.y },
+    vx: toStepVelocity(Math.cos(angle) * speed),
+    vy: toStepVelocity(Math.sin(angle) * speed),
+  };
+
+  // Half a second: about the round trip a prediction has to cover before the
+  // host's own arrow arrives and replaces it.
+  const steps = 30;
+  let worst = 0;
+  for (let i = 0; i < steps; i++) {
+    rig.step(1);
+    stepBallistic(ghost);
+    worst = Math.max(worst, Math.hypot(
+      ghost.position.x - real.body.position.x,
+      ghost.position.y - real.body.position.y,
+    ));
+  }
+
+  check('a predicted arrow is still in flight, not culled early', !real.embedded,
+    'travelled ' + Math.hypot(real.body.position.x - origin.x, real.body.position.y - origin.y).toFixed(0) + 'px');
+
+  // Both integrate `v = v * (1 - frictionAir) + g * dt²` on the same fixed step,
+  // so this is not an approximation that happens to be close — it is the same
+  // arithmetic, and the handover to the host's arrow has nothing to jump across.
+  check(
+    'the prediction traces the same arc the host is tracing',
+    worst < 0.5,
+    'worst divergence ' + worst.toFixed(3) + 'px over ' + steps + ' steps',
+  );
+
+  rig.physics.destroy();
+}
+
+/* ------------------------------------------------------------------ *
+ * 14. Snapshot codec — the only thing an online guest ever sees
+ * ------------------------------------------------------------------ */
+
+section('14. Snapshot codec');
 {
   // A whole frame: two eleven-piece archers plus their bows, and a few arrows.
   const bodyCount = 24;

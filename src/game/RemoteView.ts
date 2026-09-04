@@ -1,6 +1,8 @@
 import Matter from 'matter-js';
+import { PROJECTILE, TIME } from '../config/constants';
 import { BOW_PHASES, type Snapshot } from '../net/protocol';
-import type { BowState, RagdollHandle, RenderableProjectile, Side } from '../types';
+import type { BowState, RagdollHandle, RenderableProjectile, Side, Vec2 } from '../types';
+import { GRAVITY_FORCE_PER_MASS, toStepVelocity } from './PhysicsWorld';
 
 const SIDES: Side[] = ['left', 'right'];
 
@@ -81,6 +83,58 @@ const MAX_RATE_SLOW = 0.3;
  */
 const CLOCK_SNAP_MS = 250;
 
+/**
+ * Velocity a falling body gains per step, in px/step.
+ *
+ * Matter integrates `v = v * (1 - frictionAir) + force/mass * dt²` and then
+ * `p += v`. A predicted arrow is flown by exactly that, on exactly the same
+ * fixed step, so it traces the same arc the host's arrow is tracing at the same
+ * moment rather than merely a similar one.
+ */
+const GRAVITY_PER_STEP = GRAVITY_FORCE_PER_MASS * TIME.step * TIME.step;
+
+/**
+ * How long a predicted arrow may live before it is given up on.
+ *
+ * It normally lasts one round trip, until the host's own arrow arrives and takes
+ * over. This is the backstop for the case where the host never fired at all —
+ * the arrow simply fades from the list rather than flying on forever.
+ */
+const GHOST_MAX_MS = 1500;
+
+/** The part of an arrow's flight that can be predicted: where and how fast. */
+export interface BallisticState {
+  position: Vec2;
+  /** px per physics step, the units the host launches in. */
+  vx: number;
+  vy: number;
+}
+
+/**
+ * Advances an arrow by one fixed step, exactly as the host's physics will.
+ *
+ * Exported so it can be held against a real Matter body and shown to agree.
+ * A prediction that drifts from the thing it is predicting would show up as the
+ * arrow jumping at the moment the host's version takes over, which is precisely
+ * the artefact this is here to avoid.
+ */
+export function stepBallistic(state: BallisticState): void {
+  state.vx *= 1 - PROJECTILE.frictionAir;
+  state.vy *= 1 - PROJECTILE.frictionAir;
+  state.vy += GRAVITY_PER_STEP;
+  state.position.x += state.vx;
+  state.position.y += state.vy;
+}
+
+/** One locally predicted arrow, flown until the host's version arrives. */
+interface GhostArrow extends BallisticState {
+  owner: Side;
+  angle: number;
+  age: number;
+  /** Left-over time, so it always integrates on whole fixed steps. */
+  carry: number;
+}
+
 /** Wraps an angle into (-PI, PI] so a lerp always takes the short way round. */
 const wrap = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
 
@@ -142,6 +196,10 @@ export class RemoteView {
 
   /** Arrows in flight, rebuilt each frame from the interpolated snapshot. */
   readonly arrows: RenderableProjectile[] = [];
+  /** Locally predicted arrows, awaiting the host's own. */
+  private ghosts: GhostArrow[] = [];
+  /** Arrow ids in the last frame, so a newly appeared one can be recognised. */
+  private seenArrows = new Set<number>();
   /** Synthesised bow states, enough for the draw pose and the charge meter. */
   readonly bows: Record<Side, BowState> = {
     left: emptyBow('left'),
@@ -162,6 +220,8 @@ export class RemoteView {
   reset(): void {
     this.frames.length = 0;
     this.arrows.length = 0;
+    this.ghosts.length = 0;
+    this.seenArrows.clear();
     this.lastArrival = 0;
     this.lateness = 0;
     this.displayed = 0;
@@ -180,6 +240,27 @@ export class RemoteView {
    */
   get displayedHostTime(): number {
     return this.displayed;
+  }
+
+  /**
+   * Flies an arrow this player has just fired, before the host confirms it.
+   *
+   * Without this, releasing produces a sound and then nothing at all for a full
+   * round trip — nearly half a second of a shot that has visibly not happened.
+   * The launch is computed from the same pose the player released against, which
+   * is also the pose the host rewinds to, so the predicted arrow and the real one
+   * are the same shot and the handover is not visible.
+   */
+  addGhostArrow(owner: Side, origin: Vec2, angle: number, speed: number): void {
+    this.ghosts.push({
+      owner,
+      position: { x: origin.x, y: origin.y },
+      vx: toStepVelocity(Math.cos(angle) * speed),
+      vy: toStepVelocity(Math.sin(angle) * speed),
+      angle,
+      age: 0,
+      carry: 0,
+    });
   }
 
   /**
@@ -225,6 +306,10 @@ export class RemoteView {
   apply(now: number, ragdolls: Partial<Record<Side, RagdollHandle>>): void {
     if (!this.frames.length) return;
 
+    // Real time since the last frame, capped so a stall cannot fast-forward
+    // either the playback clock or a predicted arrow.
+    const elapsed = this.lastApply ? clamp(now - this.lastApply, 0, 100) : 0;
+
     this.delay = clamp(
       this.averageInterval * INTERVAL_MARGIN + this.lateness + LATENESS_MARGIN,
       MIN_DELAY,
@@ -237,7 +322,6 @@ export class RemoteView {
       this.displayed = desired;
       this.locked = true;
     } else {
-      const elapsed = Math.max(0, Math.min(now - this.lastApply, 100));
       const error = desired - this.displayed;
       const rate = 1 + clamp(error * CLOCK_CORRECTION_GAIN, -MAX_RATE_SLOW, MAX_RATE_FAST);
       this.displayed += elapsed * rate;
@@ -263,6 +347,7 @@ export class RemoteView {
 
     this.applyBodies(from.snap, to.snap, t, ragdolls);
     this.applyArrows(from.snap, to.snap, t);
+    this.flyGhosts(elapsed);
     this.applyBows(from.snap, to.snap, t, ragdolls);
   }
 
@@ -297,8 +382,34 @@ export class RemoteView {
     }
   }
 
+  /**
+   * Advances every predicted arrow on the host's own fixed step, and adds them
+   * to the drawn list. Whole steps only: half a step of gravity would put the
+   * prediction on a slightly different arc from the one being predicted.
+   */
+  private flyGhosts(elapsedMs: number): void {
+    for (let i = this.ghosts.length - 1; i >= 0; i--) {
+      const ghost = this.ghosts[i];
+      ghost.age += elapsedMs;
+      if (ghost.age > GHOST_MAX_MS) {
+        this.ghosts.splice(i, 1);
+        continue;
+      }
+
+      ghost.carry += elapsedMs;
+      while (ghost.carry >= TIME.step) {
+        ghost.carry -= TIME.step;
+        stepBallistic(ghost);
+      }
+      // The host turns an arrow to face its velocity every frame; so does this.
+      ghost.angle = Math.atan2(ghost.vy, ghost.vx);
+      this.arrows.push({ owner: ghost.owner, body: ghost });
+    }
+  }
+
   private applyArrows(from: Snapshot, to: Snapshot, t: number): void {
     this.arrows.length = 0;
+    const next = new Set<number>();
 
     // Arrows come and go between frames, so they are matched by id rather than
     // by position in the array.
@@ -318,7 +429,20 @@ export class RemoteView {
       }
 
       this.arrows.push({ owner, body: { position: { x, y }, angle } });
+
+      // An arrow that was not here a frame ago is the host catching up with a
+      // prediction: the oldest of ours has served its purpose.
+      if (!this.seenArrows.has(id)) this.retireGhost(owner);
+      next.add(id);
     }
+
+    this.seenArrows = next;
+  }
+
+  /** Drops the oldest prediction for a side, now that the real one has arrived. */
+  private retireGhost(owner: Side): void {
+    const index = this.ghosts.findIndex((ghost) => ghost.owner === owner);
+    if (index >= 0) this.ghosts.splice(index, 1);
   }
 
   private applyBows(

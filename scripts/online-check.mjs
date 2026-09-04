@@ -130,10 +130,10 @@ async function openPage(name, browser) {
 }
 
 /** Polls `fn` on a page until it returns truthy, or gives up. */
-async function until(page, fn, timeoutMs, step = 150) {
+async function until(page, fn, timeoutMs, step = 150, arg = undefined) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = await page.evaluate(fn);
+    const value = await page.evaluate(fn, arg);
     if (value) return value;
     if (Date.now() > deadline) return null;
     await wait(step);
@@ -388,13 +388,24 @@ try {
     score = await readScore(host);
     if (!firstPoint && score && score !== '0:0') {
       firstPoint = score;
-      // Read the guest immediately: the point exists on its screen only because
-      // the host's event arrived and was replayed there.
-      const echo = await until(guest, () => {
-        const l = document.querySelector('.hud__pip--left');
-        const r = document.querySelector('.hud__pip--right');
-        return l && r ? l.textContent + ':' + r.textContent : null;
-      }, 5000);
+      /**
+       * Wait for the guest to *agree*, rather than for it to show anything at
+       * all. Returning the score as soon as it could be read looked right on a
+       * fast link only because the event had usually already arrived; at 200ms
+       * each way it read the stale scoreboard and called it a mismatch.
+       */
+      const echo = await until(
+        guest,
+        (want) => {
+          const l = document.querySelector('.hud__pip--left');
+          const r = document.querySelector('.hud__pip--right');
+          const score = l && r ? l.textContent + ':' + r.textContent : null;
+          return score === want ? score : null;
+        },
+        6000,
+        150,
+        firstPoint,
+      );
       note(true, 'a point is scored in the online match', 'host ' + firstPoint);
       note(echo === firstPoint, 'both computers show the same score', 'host ' + firstPoint + ' guest ' + echo);
       await host.screenshot({ path: resolve(outDir, '26-online-point-host.png') });

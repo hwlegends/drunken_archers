@@ -102,14 +102,24 @@ const READY_RETRY_MS = 700;
 const STALL_AFTER_MS = 1500;
 
 /** How far back the host remembers a bow pose, for a remote player's release. */
-const AIM_HISTORY_MS = 500;
+const AIM_HISTORY_MS = 700;
 
 /**
- * Ceiling on how far a remote release is rewound. Past this the connection is
- * bad enough that honouring the full delay would let a player shoot at an
- * opponent who has visibly moved on, which is worse than the unfairness it fixes.
+ * Ceiling on how far a remote release is rewound.
+ *
+ * This has to cover a full round trip plus the guest's playback buffer, because
+ * that is the age of the pose they released against. At 250ms it did not: on a
+ * 400ms round trip roughly 200ms of the correction was being clamped away, and
+ * 200ms is 0.3 to 0.6 radians of bow sweep — across an arena that is a miss by
+ * two to four body-heights. The guest could not aim at all, and no amount of
+ * skill would have fixed it.
+ *
+ * A rewind this long is far less objectionable here than the same number would
+ * be in a shooter. The archers are pinned to their platforms and can only sway;
+ * there is nowhere to run to, so favouring the shooter costs the other player
+ * very little. Past this the link is beyond saving anyway.
  */
-const MAX_REWIND_MS = 250;
+const MAX_REWIND_MS = 500;
 
 /** One remembered bow pose: where the bow was and where it pointed. */
 interface AimSample {
@@ -536,10 +546,45 @@ export class GameEngine {
 
   private endPredictedDraw(): void {
     if (!this.predictedDrawStart) return;
+    const heldMs = performance.now() - this.predictedDrawStart;
     this.predictedDrawStart = 0;
     audioManager.stopDraw();
     audioManager.play('bowRelease');
     audioManager.play('arrowFlight');
+    this.predictShot(heldMs);
+  }
+
+  /**
+   * Flies the arrow this player just fired, without waiting to be told it
+   * happened.
+   *
+   * Releasing used to make a sound and then show nothing for a full round trip —
+   * on a slow link, most of half a second in which the shot had visibly not
+   * left. Everything the launch needs is already known here: the charge is the
+   * time the button was held, and the pose is the one on screen, which is also
+   * the pose the host rewinds to. Both ends therefore compute the same shot, and
+   * the real arrow simply takes the prediction's place when it arrives.
+   */
+  private predictShot(heldMs: number): void {
+    const net = this.net;
+    if (!net) return;
+    const ragdoll = this.ragdolls[net.side];
+    if (!ragdoll) return;
+
+    const charge = Math.min(1, heldMs / 1000 / BOW.timeToMaxCharge);
+    const eased = Math.pow(charge, BOW.chargeEase);
+    const speed = BOW.minLaunchSpeed + (BOW.maxLaunchSpeed - BOW.minLaunchSpeed) * eased;
+    const angle = ragdoll.bow.angle;
+
+    this.remote.addGhostArrow(
+      net.side,
+      {
+        x: ragdoll.bow.position.x + Math.cos(angle) * BOW.nockOffset,
+        y: ragdoll.bow.position.y + Math.sin(angle) * BOW.nockOffset,
+      },
+      angle,
+      speed,
+    );
   }
 
   /** Runs each frame while a predicted draw is open. */

@@ -57,6 +57,13 @@ the window or switches tabs the match stalls for both players until they come
 back. The other screen says so rather than appearing to have crashed, and play
 resumes where it left off.
 
+The guest carries all of the latency and the host carries none of it, which is
+worth knowing before blaming the network: on a 400ms round trip one player is
+having a perfect game. What the guest loses is not fairness — its aim is rewound
+to the instant it saw, and its own draw, shot and sound are all predicted
+locally — but currency. It is watching a world that is consistently about half a
+second old.
+
 And **run the lobby on one of the two computers playing**, which is what
 `npm run host` does. Every message goes through it, so a lobby on some third
 machine puts two internet hops in each direction instead of one; a lobby on
@@ -220,15 +227,32 @@ A few details worth knowing:
   ignored the buffer entirely, leaving about a tenth of a second uncorrected;
   a tenth of a second is several degrees of bow sweep, which across an arena is
   most of an archer, and it read as the game ignoring where you aimed. The
-  rewind is capped at 250ms, past which favouring the shooter costs the other
-  player more than it is worth.
-- **The guest draws its own bow before the host confirms it.** A button that
-  produces no feedback for a round trip feels like a slow game even when the
-  match is healthy. A charge is only elapsed time, and the press and the release
-  are delayed equally, so the duration the host measures is the duration held
-  locally — predicting it is not an estimate that might be wrong, it is the same
-  number arrived at sooner. The opponent's bow is still drawn and heard off the
-  frames, so it stays in step with the picture.
+  rewind is capped at 500ms. That cap is not a comfort margin — it has to cover
+  a full round trip plus the guest's buffer, because that is the age of the pose
+  they released against. At 250ms it did not: on a 400ms round trip roughly
+  200ms of the correction was clamped away, and 200ms is 0.3 to 0.6 radians of
+  bow sweep, which across an arena is a miss by two to four body-heights. The
+  guest could not aim at all. A rewind this long is far less objectionable here
+  than the same number would be in a shooter, because the archers are pinned to
+  their platforms and can only sway; there is nowhere to run to, so favouring
+  the shooter costs the other player very little.
+- **The guest draws its own bow, and fires its own arrow, before the host
+  confirms either.** A button that produces no feedback for a round trip feels
+  like a slow game even when the match is healthy. A charge is only elapsed
+  time, and the press and the release are delayed equally, so the duration the
+  host measures is the duration held locally — predicting it is not an estimate
+  that might be wrong, it is the same number arrived at sooner. The shot then
+  follows from it: the launch speed comes from that charge and the direction
+  from the pose on screen, which is the pose the host rewinds to, so both ends
+  compute the same shot. The predicted arrow is flown with `stepBallistic`,
+  which is Matter's own integrator written out — `v = v(1 - frictionAir) + g·dt²`
+  on the same fixed step — so it does not merely resemble the host's arrow, it
+  traces it. Measured against a real Matter body over half a second of flight the
+  two agree to 0.000px, and the real arrow takes the prediction's place with
+  nothing to jump across. Through a relay adding 200ms each way this took the
+  gap between releasing and seeing the shot leave from **462ms to 29ms**. The
+  opponent's bow is still drawn and heard off the frames, so it stays in step
+  with the picture.
 - **The lobby relays, it does not arbitrate.** `server/lobby-server.mjs` tracks
   who is connected and who is challenging whom, and forwards match messages to
   the one socket paired with the sender. It never reads them.
@@ -240,7 +264,7 @@ A few details worth knowing:
 ## Verification
 
 ```bash
-npm run sim-check          # 93 headless physics/combat/AI/codec/step assertions
+npm run sim-check          # 95 headless physics/combat/AI/codec/prediction assertions
 npm run visual-check       # drives the built game in Chrome, writes shots/
 npm run online-check       # two browsers play a real match through the real lobby
 npm run wire-check         # measures what a match costs on the wire, twice
@@ -280,9 +304,10 @@ afternoon:
 LOBBY_DELAY_MS=60 LOBBY_JITTER_MS=30 npm run lobby
 ```
 
-The delay is what the rewind exists for; the jitter is what the playback clock
-exists for. Both suites accept them, so `LOBBY_DELAY_MS=60 LOBBY_JITTER_MS=40
-npm run online-check` plays a full match under one.
+The delay is what the rewind and the shot prediction exist for; the jitter is
+what the playback clock exists for. Both suites accept them, so
+`LOBBY_DELAY_MS=200 npm run online-check` plays a full match across a 400ms
+round trip.
 
 ## About the reference material
 
