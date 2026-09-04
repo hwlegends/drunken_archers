@@ -7,9 +7,29 @@ const SIDES: Side[] = ['left', 'right'];
 /** Frames older than this many are discarded outright rather than played late. */
 const MAX_BUFFERED = 12;
 
-/** Bounds on the interpolation delay, in ms. */
-const MIN_DELAY = 45;
-const MAX_DELAY = 200;
+/**
+ * Bounds on the interpolation delay, in ms.
+ *
+ * The floor is low because the delay is now derived from how unevenly frames
+ * actually arrive rather than from a flat multiple of the frame interval: a
+ * steady link earns a short buffer instead of paying for jitter it does not
+ * have.
+ */
+const MIN_DELAY = 20;
+const MAX_DELAY = 220;
+
+/**
+ * How much of the measured jitter to hold in hand. Arrival gaps are roughly
+ * normal around the send interval, so a little over two mean deviations covers
+ * the large majority of frames; the rest are absorbed by holding the last one.
+ */
+const JITTER_ALLOWANCE = 2.5;
+
+/**
+ * Slack above the frame interval. Interpolating needs a frame on each side of
+ * the playback point, so the delay can never usefully drop below one interval.
+ */
+const INTERVAL_MARGIN = 1.05;
 
 /** Wraps an angle into (-PI, PI] so a lerp always takes the short way round. */
 const wrap = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
@@ -34,13 +54,21 @@ interface Frame {
  *
  * Frames are played back on a short delay rather than the instant they land.
  * A network delivers them unevenly, and rendering the newest one immediately
- * turns that jitter into visible stutter; holding roughly two frames of slack
- * means there is almost always a later frame to interpolate towards.
+ * turns that jitter into visible stutter; keeping a little slack means there is
+ * almost always a later frame to interpolate towards.
+ *
+ * How much slack is measured rather than assumed. Every millisecond of it is a
+ * millisecond of extra lag on everything the player sees, so the buffer is one
+ * frame interval plus the jitter this particular link has actually shown, and
+ * nothing more.
  */
 export class RemoteView {
   private frames: Frame[] = [];
   private averageInterval = 33;
+  /** Mean absolute deviation of arrival gaps: how uneven the link is. */
+  private jitter = 0;
   private lastArrival = 0;
+  private delay = 40;
 
   /** Arrows in flight, rebuilt each frame from the interpolated snapshot. */
   readonly arrows: RenderableProjectile[] = [];
@@ -53,24 +81,30 @@ export class RemoteView {
   /**
    * Draws and shots, recovered from the bow phase changing between frames.
    *
-   * The guest could play its own draw the instant a key goes down, which would
-   * be a few tens of milliseconds earlier — but then the sound would lead the
-   * picture, because the picture is the delayed playback below. Deriving both
-   * from the same frames keeps them together.
+   * This is how the opponent's bow makes noise: their draw and their shot are
+   * heard exactly when they are seen, because both come off the same frames.
+   * The listener's own bow is not handled here — it is predicted locally, so
+   * that a button answers immediately rather than a round trip later.
    */
-  onBowEvent: ((event: 'draw' | 'fire') => void) | null = null;
+  onBowEvent: ((side: Side, event: 'draw' | 'fire') => void) | null = null;
 
   /** Drops everything buffered. Called whenever the host rebuilds the arena. */
   reset(): void {
     this.frames.length = 0;
     this.arrows.length = 0;
     this.lastArrival = 0;
+    this.jitter = 0;
     for (const side of SIDES) Object.assign(this.bows[side], emptyBow(side));
   }
 
-  /** True once at least one frame has arrived for the current encounter. */
-  get ready(): boolean {
-    return this.frames.length > 0;
+  /**
+   * How far behind the host's live world this screen is, beyond the time the
+   * frames spent in transit. The host is told this when a shot is released: the
+   * whole game is the instant of release, so it has to rewind to the pose that
+   * was actually on screen, not just undo the network trip.
+   */
+  get viewLagMs(): number {
+    return this.delay;
   }
 
   /**
@@ -93,7 +127,9 @@ export class RemoteView {
       // A gap that long is a stall, not a rate — folding it in would push the
       // playback delay up and leave it there.
       if (gap > 0 && gap < 400) {
+        const deviation = Math.abs(gap - this.averageInterval);
         this.averageInterval += (gap - this.averageInterval) * 0.15;
+        this.jitter += (deviation - this.jitter) * 0.15;
       }
     }
     this.lastArrival = now;
@@ -109,8 +145,12 @@ export class RemoteView {
   apply(now: number, ragdolls: Partial<Record<Side, RagdollHandle>>): void {
     if (!this.frames.length) return;
 
-    const delay = clamp(this.averageInterval * 1.8, MIN_DELAY, MAX_DELAY);
-    const target = now - delay;
+    this.delay = clamp(
+      this.averageInterval * INTERVAL_MARGIN + this.jitter * JITTER_ALLOWANCE,
+      MIN_DELAY,
+      MAX_DELAY,
+    );
+    const target = now - this.delay;
 
     // Keep exactly one frame older than the playback point.
     while (this.frames.length > 2 && this.frames[1].at <= target) this.frames.shift();
@@ -196,11 +236,11 @@ export class RemoteView {
       bow.charge = lerp(from.bw[index * 2 + 1], to.bw[index * 2 + 1], t);
 
       if (previous !== bow.phase) {
-        if (bow.phase === 'drawing') this.onBowEvent?.('draw');
+        if (bow.phase === 'drawing') this.onBowEvent?.(side, 'draw');
         // Drawing straight into a reload is the string being let go; drawing
         // back to ready is a draw that was cancelled, and makes no sound.
         else if (previous === 'drawing' && bow.phase === 'reloading') {
-          this.onBowEvent?.('fire');
+          this.onBowEvent?.(side, 'fire');
         }
       }
 

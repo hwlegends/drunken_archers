@@ -17,6 +17,7 @@ import { PhysicsWorld, toSecondVelocity, toStepVelocity } from '../src/game/Phys
 import { ProjectileSystem } from '../src/game/ProjectileSystem';
 import { RagdollFactory } from '../src/game/RagdollFactory';
 import { SwayController } from '../src/game/SwayController';
+import { BOW_PHASES, decodeSnapshot, encodeSnapshot } from '../src/net/protocol';
 import { canTransition, isSimulating, showsArena } from '../src/state/GameStateMachine';
 import type { ArenaConfig, GamePhase, PlayerState, RagdollHandle, Side } from '../src/types';
 
@@ -379,16 +380,29 @@ section('5. Arrow flight');
       rig2.step(2);
     }
     const tracked = rig2.projectiles.list();
-    const live = tracked.filter((p) => !p.embedded).length;
     check(
       'the arrow budget never exceeds its cap',
       tracked.length <= PROJECTILE.maxPerSide,
       tracked.length + ' tracked after ' + fired.length + ' shots (cap ' + PROJECTILE.maxPerSide + ')',
     );
+
+    /**
+     * The budget must recycle the oldest arrow and only the oldest, so the last
+     * `maxPerSide` fired are all still accounted for.
+     *
+     * This used to assert that some minimum number were still *in flight*,
+     * which is not the same claim: an arrow that embeds in terrain or in an
+     * archer is still tracked, and how many do that depends on where the random
+     * sway happened to put the target. The check failed roughly one run in ten
+     * for that reason alone. What the budget actually promises is that nothing
+     * inside it is dropped, and that does not depend on chance.
+     */
+    const kept = new Set(tracked.map((p) => p.id));
+    const expected = fired.slice(-PROJECTILE.maxPerSide);
     check(
-      'recently fired arrows are still in flight, not silently deleted',
-      live >= Math.min(4, PROJECTILE.maxPerSide),
-      live + ' live arrows',
+      'the newest arrows are all kept, whatever became of them',
+      expected.every((id) => kept.has(id)),
+      expected.filter((id) => !kept.has(id)).length + ' of the last ' + expected.length + ' missing',
     );
     // Every tracked arrow must still have a body in the world.
     const worldIds = new Set(Matter.Composite.allBodies(rig2.physics.world).map((b) => b.id));
@@ -804,6 +818,77 @@ section('11. State machine');
   check('the arena stays visible behind every result overlay',
     showsArena('roundIntro') && showsArena('paused') && showsArena('roundResult') &&
     showsArena('matchResult') && showsArena('deathmatchResult') && !showsArena('menu'));
+}
+
+/* ------------------------------------------------------------------ *
+ * 12. Snapshot codec — the only thing an online guest ever sees
+ * ------------------------------------------------------------------ */
+
+section('12. Snapshot codec');
+{
+  // A whole frame: two eleven-piece archers plus their bows, and a few arrows.
+  const bodyCount = 24;
+  const bodies: number[] = [];
+  const rng = makeRng(20260903);
+  for (let i = 0; i < bodyCount; i++) {
+    bodies.push(rng() * 1280, rng() * 900 - 100, (rng() - 0.5) * Math.PI * 2);
+  }
+  const arrows: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    arrows.push(1000 + i, i % 2, rng() * 1280, rng() * 700, (rng() - 0.5) * 3);
+  }
+
+  const snapshot = {
+    n: 4242,
+    b: bodies,
+    a: arrows,
+    bw: [BOW_PHASES.indexOf('drawing'), 0.63, BOW_PHASES.indexOf('reloading'), 0] as [number, number, number, number],
+    d: [0, 1] as [number, number],
+  };
+
+  const encoded = encodeSnapshot(snapshot);
+  const decoded = decodeSnapshot(encoded)!;
+
+  check('a packed frame is far smaller than its JSON', encoded.byteLength < JSON.stringify(snapshot).length / 2.5,
+    encoded.byteLength + ' bytes vs ' + JSON.stringify(snapshot).length + ' as JSON');
+
+  check('every body survives the round trip', decoded !== null && decoded.b.length === bodies.length,
+    decoded ? decoded.b.length + ' of ' + bodies.length : 'decode failed');
+
+  let worstPos = 0;
+  let worstAngle = 0;
+  for (let i = 0; i < bodies.length; i += 3) {
+    worstPos = Math.max(worstPos, Math.abs(decoded.b[i] - bodies[i]), Math.abs(decoded.b[i + 1] - bodies[i + 1]));
+    worstAngle = Math.max(worstAngle, Math.abs(decoded.b[i + 2] - bodies[i + 2]));
+  }
+  // Quarter-pixel and ten-thousandth-radian fields: both are well under one
+  // rendered pixel, which is the only thing the precision has to buy.
+  check('positions land within a quarter of a pixel', worstPos <= 0.125 + 1e-9, 'worst ' + worstPos.toFixed(4) + 'px');
+  check('angles land within a thousandth of a radian', worstAngle <= 0.001, 'worst ' + worstAngle.toFixed(5) + ' rad');
+
+  check('arrow identity and ownership survive',
+    decoded.a.length === arrows.length &&
+      decoded.a.every((v, i) => (i % 5 < 2 ? v === arrows[i] : true)),
+    decoded.a.length / 5 + ' arrows');
+
+  check('bow phase, charge and defeat flags survive',
+    decoded.n === snapshot.n &&
+      decoded.bw[0] === snapshot.bw[0] &&
+      decoded.bw[2] === snapshot.bw[2] &&
+      Math.abs(decoded.bw[1] - snapshot.bw[1]) < 0.01 &&
+      decoded.d[0] === 0 && decoded.d[1] === 1);
+
+  // A ragdoll's angle accumulates without bound as it spins; the field holds
+  // one turn, so the encoder has to wrap rather than clip.
+  const spun = { ...snapshot, b: [100, 100, 42.5], a: [] as number[] };
+  const spunBack = decodeSnapshot(encodeSnapshot(spun))!;
+  const wrapped = Math.atan2(Math.sin(42.5), Math.cos(42.5));
+  check('an angle that has wound past a full turn still decodes as its direction',
+    Math.abs(spunBack.b[2] - wrapped) < 0.001, spunBack.b[2].toFixed(3) + ' vs ' + wrapped.toFixed(3));
+
+  check('a truncated frame is rejected rather than half-applied',
+    decodeSnapshot(encoded.slice(0, encoded.byteLength - 3)) === null &&
+      decodeSnapshot(new ArrayBuffer(4)) === null);
 }
 
 /* ------------------------------------------------------------------ *

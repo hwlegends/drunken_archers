@@ -1,5 +1,5 @@
 import Matter from 'matter-js';
-import { AI, COMBAT, DEATHMATCH_SKINS, MATCH, SKINS, TIME, VIEW, type Skin } from '../config/constants';
+import { AI, BOW, COMBAT, DEATHMATCH_SKINS, MATCH, SKINS, TIME, VIEW, type Skin } from '../config/constants';
 import { BOW_PHASES, type MatchMessage, type MatchRole, type Snapshot } from '../net/protocol';
 import type {
   ArenaConfig,
@@ -58,6 +58,8 @@ export interface NetLink {
   /** The archer this computer's input drives. */
   side: Side;
   send: (message: MatchMessage) => void;
+  /** The hot path, kept separate because it is packed rather than serialised. */
+  sendSnapshot: (snapshot: Snapshot) => void;
   subscribe: (listener: (message: MatchMessage) => void) => () => void;
 }
 
@@ -68,8 +70,10 @@ const SIDES: Side[] = ['left', 'right'];
  * How often the host ships a frame of its world.
  *
  * 30 Hz against a 60 Hz simulation: the guest interpolates between frames, so
- * doubling the rate would double the traffic to remove a smoothing step that is
- * not visible anyway.
+ * the missing halves are drawn rather than missed. Raising this is the one lever
+ * that trades the host's upload for a shorter buffer on the guest — the buffer
+ * cannot go below one interval — and is worth pulling only on a link that is
+ * known to have the headroom.
  */
 const SNAPSHOT_INTERVAL_MS = 1000 / 30;
 
@@ -87,14 +91,14 @@ const READY_RETRY_MS = 700;
 const STALL_AFTER_MS = 1500;
 
 /** How far back the host remembers a bow pose, for a remote player's release. */
-const AIM_HISTORY_MS = 400;
+const AIM_HISTORY_MS = 500;
 
 /**
  * Ceiling on how far a remote release is rewound. Past this the connection is
  * bad enough that honouring the full delay would let a player shoot at an
  * opponent who has visibly moved on, which is worse than the unfairness it fixes.
  */
-const MAX_REWIND_MS = 150;
+const MAX_REWIND_MS = 250;
 
 /** One remembered bow pose: where the bow was and where it pointed. */
 interface AimSample {
@@ -103,14 +107,6 @@ interface AimSample {
   x: number;
   y: number;
 }
-
-/**
- * Snapshot precision. A tenth of a pixel and a thousandth of a radian are both
- * well under what a 1280-wide viewport can show, and rounding there is most of
- * the difference between a compact frame and one full of 17-digit doubles.
- */
-const round1 = (value: number): number => Math.round(value * 10) / 10;
-const round3 = (value: number): number => Math.round(value * 1000) / 1000;
 
 export class GameEngine {
   private readonly physics = new PhysicsWorld();
@@ -167,6 +163,8 @@ export class GameEngine {
   private lastReadyAt = 0;
   private rttMs = 0;
   private stalled = false;
+  /** Guest only: when the local button went down, or 0 if it is not held. */
+  private predictedDrawStart = 0;
   /** Recent bow poses for the remote archer, so its release can be rewound. */
   private aimHistory: AimSample[] = [];
 
@@ -192,7 +190,7 @@ export class GameEngine {
       },
     });
 
-    this.remote.onBowEvent = (event) => this.playBowSound(event);
+    this.remote.onBowEvent = (side, event) => this.playBowSound(side, event);
 
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.disposeCollision = this.physics.onCollisionStart((event) => {
@@ -453,7 +451,8 @@ export class GameEngine {
     if (this.net) {
       if (side !== this.net.side) return;
       if (this.net.role === 'guest') {
-        this.net.send({ k: 'in', down: true });
+        this.net.send({ k: 'in', down: true, lag: Math.round(this.remote.viewLagMs) });
+        this.beginPredictedDraw(side);
         return;
       }
     }
@@ -464,11 +463,56 @@ export class GameEngine {
     if (this.net) {
       if (side !== this.net.side) return;
       if (this.net.role === 'guest') {
-        this.net.send({ k: 'in', down: false });
+        this.net.send({ k: 'in', down: false, lag: Math.round(this.remote.viewLagMs) });
+        this.endPredictedDraw();
         return;
       }
     }
     this.applyRelease(side, true);
+  }
+
+  /* ---- the guest's own draw, shown before the host confirms it ---- */
+
+  /**
+   * A guest's button would otherwise take a full round trip to produce any
+   * feedback at all, which reads as the game being slow even when the match is
+   * running perfectly. The draw is therefore shown immediately.
+   *
+   * Predicting it is safe because a charge is only elapsed time. The press and
+   * the release are delayed by the same amount, so the duration the host
+   * measures is the duration held here — the prediction is not an estimate of
+   * the host's charge, it is the same number arrived at sooner.
+   */
+  private beginPredictedDraw(side: Side): void {
+    // Only when the bow is loaded, so a button mashed during a reload does not
+    // draw a charge that is not really building.
+    if (this.remote.bows[side].phase !== 'ready') return;
+    this.predictedDrawStart = performance.now();
+    audioManager.play('bowDraw');
+  }
+
+  private endPredictedDraw(): void {
+    if (!this.predictedDrawStart) return;
+    this.predictedDrawStart = 0;
+    audioManager.stopDraw();
+    audioManager.play('bowRelease');
+    audioManager.play('arrowFlight');
+  }
+
+  /** Runs each frame while a predicted draw is open. */
+  private updatePredictedDraw(now: number): void {
+    const net = this.net;
+    if (!net || !this.predictedDrawStart) return;
+    const bow = this.remote.bows[net.side];
+    // The host has already resolved the shot, or the archer is gone.
+    if (bow.phase === 'reloading') {
+      this.predictedDrawStart = 0;
+      return;
+    }
+    const charge = Math.min(1, (now - this.predictedDrawStart) / 1000 / BOW.timeToMaxCharge);
+    bow.phase = 'drawing';
+    bow.charge = charge;
+    audioManager.setDrawCharge(charge);
   }
 
   /**
@@ -486,12 +530,12 @@ export class GameEngine {
     }
   }
 
-  private applyRelease(side: Side, local: boolean): void {
+  private applyRelease(side: Side, local: boolean, viewLagMs = 0): void {
     const bow = this.bows[side];
     if (!bow) return;
     if (this.players[side].controller === 'cpu') return;
 
-    const shot = bow.release(local ? undefined : this.rewoundAim());
+    const shot = bow.release(local ? undefined : this.rewoundAim(viewLagMs));
     if (local) audioManager.stopDraw();
     if (shot) {
       audioManager.play('bowRelease');
@@ -500,13 +544,21 @@ export class GameEngine {
   }
 
   /**
-   * The remote archer's bow as it stood one one-way trip ago, which is the bow
-   * that player was actually looking at when they let go. Falls back to the
-   * live pose when there is no history yet or the link is fast enough that the
-   * difference is nothing.
+   * The remote archer's bow as that player actually saw it when they let go.
+   *
+   * Two delays stand between the two screens, and both have to come off. The
+   * message spent a full round trip in the air — half of it carrying the frame
+   * they were looking at, half of it carrying their release back. On top of
+   * that their screen is deliberately running a little behind the frames it has,
+   * to smooth out jitter, and that buffer is theirs to report.
+   *
+   * Rewinding by half a trip, as this first did, left roughly a tenth of a
+   * second uncorrected: enough for the bow to sweep several degrees, which over
+   * the width of an arena is most of an archer. It read as the game ignoring
+   * where you aimed.
    */
-  private rewoundAim(): { angle: number; position: Vec2 } | undefined {
-    const rewind = Math.min(MAX_REWIND_MS, this.rttMs / 2);
+  private rewoundAim(viewLagMs: number): { angle: number; position: Vec2 } | undefined {
+    const rewind = Math.min(MAX_REWIND_MS, this.rttMs + viewLagMs);
     if (rewind < TIME.step || !this.aimHistory.length) return undefined;
 
     const at = performance.now() - rewind;
@@ -576,6 +628,8 @@ export class GameEngine {
   private guestFrame(now: number, delta: number): void {
     this.elapsed += delta;
     this.remote.apply(now, this.ragdolls);
+    // After the snapshot, so it overrides the host's older view of our own bow.
+    this.updatePredictedDraw(now);
 
     const left = this.ragdolls.left;
     const right = this.ragdolls.right;
@@ -599,7 +653,7 @@ export class GameEngine {
     if (net.role === 'host') {
       if (this.arena && now - this.lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
         this.lastSnapshotAt = now;
-        net.send({ k: 'snap', s: this.buildSnapshot() });
+        net.sendSnapshot(this.buildSnapshot());
       }
       return;
     }
@@ -764,6 +818,7 @@ export class GameEngine {
     this.lastReadyAt = 0;
     this.rttMs = 0;
     this.stalled = false;
+    this.predictedDrawStart = 0;
     if (net) this.disposeNet = net.subscribe((message) => this.handleNetMessage(message));
   }
 
@@ -785,8 +840,8 @@ export class GameEngine {
    *
    * Both computers build their archers from the same factory in the same order,
    * so a body's index is enough to address it and no identifier has to travel.
-   * Values are rounded because a tenth of a pixel is far below what anyone can
-   * see and full doubles would roughly double the frame.
+   * Values go out full precision: `encodeSnapshot` is the one place that decides
+   * how coarsely they are actually worth sending.
    */
   private buildSnapshot(): Snapshot {
     const bodies: number[] = [];
@@ -794,7 +849,7 @@ export class GameEngine {
       const ragdoll = this.ragdolls[side];
       if (!ragdoll) continue;
       for (const body of ragdoll.bodies) {
-        bodies.push(round1(body.position.x), round1(body.position.y), round3(body.angle));
+        bodies.push(body.position.x, body.position.y, body.angle);
       }
     }
 
@@ -803,16 +858,16 @@ export class GameEngine {
       arrows.push(
         projectile.id,
         projectile.owner === 'left' ? 1 : 0,
-        round1(projectile.body.position.x),
-        round1(projectile.body.position.y),
-        round3(projectile.body.angle),
+        projectile.body.position.x,
+        projectile.body.position.y,
+        projectile.body.angle,
       );
     }
 
     const bow = (side: Side): [number, number] => {
       const state = this.bows[side]?.state;
       if (!state) return [BOW_PHASES.indexOf('ready'), 0];
-      return [BOW_PHASES.indexOf(state.phase), round3(state.charge)];
+      return [BOW_PHASES.indexOf(state.phase), state.charge];
     };
     const [leftPhase, leftCharge] = bow('left');
     const [rightPhase, rightCharge] = bow('right');
@@ -858,7 +913,7 @@ export class GameEngine {
         // Only the host acts on a button, and only ever for the other archer.
         if (this.net.role !== 'host') break;
         if (message.down) this.applyPress(OTHER[this.net.side], false);
-        else this.applyRelease(OTHER[this.net.side], false);
+        else this.applyRelease(OTHER[this.net.side], false, message.lag);
         break;
 
       case 'ready': {
@@ -938,9 +993,13 @@ export class GameEngine {
     handler?.(...args);
   }
 
-  /** Draw and release sounds for a match this computer is only watching. */
-  private playBowSound(event: 'draw' | 'fire'): void {
-    if (this.net?.role !== 'guest') return;
+  /**
+   * The opponent's draw and release, heard when they are seen. Our own bow is
+   * predicted in `updatePredictedDraw`, so it is deliberately skipped here —
+   * otherwise every shot would sound twice.
+   */
+  private playBowSound(side: Side, event: 'draw' | 'fire'): void {
+    if (this.net?.role !== 'guest' || side === this.net.side) return;
     if (event === 'draw') {
       audioManager.play('bowDraw');
       return;

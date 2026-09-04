@@ -45,10 +45,20 @@ different port, a tunnel, a reverse proxy — goes in the **Server** field at th
 bottom of the panel, or in a `?lobby=ws://…` query parameter.
 
 The challenger's browser hosts: it runs the simulation and the other one
-replays it. That is worth knowing for one reason — a browser gives no animation
-frames to a hidden tab, so if the host minimises the window or switches tabs the
-match stalls for both players until they come back. The other screen says so
-rather than appearing to have crashed, and play resumes where it left off.
+replays it. Two things follow from that.
+
+A browser gives no animation frames to a hidden tab, so if the host minimises
+the window or switches tabs the match stalls for both players until they come
+back. The other screen says so rather than appearing to have crashed, and play
+resumes where it left off.
+
+And **run the lobby on one of the two computers playing**, which is what
+`npm run host` does. Every message goes through it, so a lobby on some third
+machine puts two internet hops in each direction instead of one; a lobby on
+either player's machine is already as direct as a peer-to-peer connection would
+be, in both directions and whoever ends up hosting. If the two machines differ,
+challenge *from* the better-connected one — the host is the side that simulates
+and the side that uploads.
 
 ## Controls
 
@@ -143,15 +153,38 @@ A few details worth knowing:
   transforms into its own bodies, and renders them with the ordinary renderer.
   A round can never end differently on the two screens because only one of them
   ever decides anything.
-- **Frames are played back late, on purpose.** `RemoteView` holds roughly two
-  frames of slack and interpolates towards the newest one. Drawing each frame
-  the instant it lands would turn ordinary network jitter into visible stutter.
-- **A remote release is rewound.** The shot direction is the bow angle at the
-  instant of release, so a player on the other end of a 60ms link would
-  otherwise fire along a bow that had already drifted past what they saw. The
-  host keeps 400ms of bow poses and fires a remote shot along the pose from half
-  a round trip ago, capped at 150ms — beyond that the correction is worse than
-  the unfairness.
+- **A frame of the world is 184 bytes.** Snapshots are the only traffic that
+  never stops, so they are packed into fixed-width integers — quarter-pixel
+  positions, ten-thousandth-radian angles — rather than written as JSON, which
+  cost about 650 bytes a frame for the same information. The relay forwards them
+  as raw bytes without decoding. The figure that matters is the host's *upload*,
+  because a saturated uplink does not drop frames politely: it delays them, and
+  that delay arrives as jitter the guest has to buffer against.
+- **Frames are played back late, on purpose — but only as late as the link
+  requires.** `RemoteView` interpolates towards the newest frame rather than
+  drawing it on arrival, because drawing on arrival turns ordinary jitter into
+  visible stutter. Every millisecond of that buffer is a millisecond of lag on
+  everything you see, so its size is one frame interval plus the jitter this
+  particular connection has actually shown, measured continuously. A steady link
+  pays about 40ms where a flat multiple of the frame rate charged 60ms, and a
+  bad link now widens the buffer instead of stuttering through it.
+- **A remote release is rewound to what that player could see.** The shot
+  direction is the bow angle at the instant of release, so two delays stand
+  between the two screens: the round trip, and the guest's own playback buffer.
+  Both come off. Rewinding by half a trip — which is what this did first — left
+  about a tenth of a second uncorrected, and a tenth of a second is several
+  degrees of bow sweep, which across an arena is most of an archer. It read as
+  the game ignoring where you aimed. The host keeps 500ms of bow poses and the
+  guest reports its own buffer with every button; the correction is capped at
+  250ms, past which favouring the shooter costs the other player more than it is
+  worth.
+- **The guest draws its own bow before the host confirms it.** A button that
+  produces no feedback for a round trip feels like a slow game even when the
+  match is healthy. A charge is only elapsed time, and the press and the release
+  are delayed equally, so the duration the host measures is the duration held
+  locally — predicting it is not an estimate that might be wrong, it is the same
+  number arrived at sooner. The opponent's bow is still drawn and heard off the
+  frames, so it stays in step with the picture.
 - **The lobby relays, it does not arbitrate.** `server/lobby-server.mjs` tracks
   who is connected and who is challenging whom, and forwards match messages to
   the one socket paired with the sender. It never reads them.
@@ -163,9 +196,10 @@ A few details worth knowing:
 ## Verification
 
 ```bash
-npm run sim-check          # 72 headless physics/combat/AI assertions
+npm run sim-check          # 80 headless physics/combat/AI/codec assertions
 npm run visual-check       # drives the built game in Chrome, writes shots/
 npm run online-check       # two browsers play a real match through the real lobby
+npm run wire-check         # measures what a match costs on the wire, twice
 npm run match-flow-check   # plays a full match to 5 and a deathmatch run (~6 min)
 npm run typecheck
 ```
@@ -182,6 +216,20 @@ screens show the same score after a point — which is only true if the guest's
 button reached the host, the host's world reached the guest, and neither drifted
 in between. It uses two browsers rather than two tabs because a background tab
 gets no animation frames, and the host's animation frame is the match.
+
+`wire-check` plays the same match twice and counts bytes, holding the host to an
+upload budget and a frame to 320 bytes, so a change that quietly triples the
+traffic fails rather than merely feeling worse. The second run goes through a
+relay holding every frame 120ms each way.
+
+Two computers on a desk share a link fast enough that none of the lag
+compensation matters, which is exactly the condition under which it cannot be
+tested. `LOBBY_DELAY_MS` makes the relay hold every frame for a set delay, so
+the same two computers behave like two cities:
+
+```bash
+LOBBY_DELAY_MS=120 npm run lobby
+```
 
 ## About the reference material
 

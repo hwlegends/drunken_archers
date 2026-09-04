@@ -82,6 +82,7 @@ export function GameCanvas({ mode, matchKey, onLatency, onStalled }: GameCanvasP
             role: net.role,
             side: net.side,
             send: (message) => useNetStore.getState().relay(message),
+            sendSnapshot: (snapshot) => useNetStore.getState().relaySnapshot(snapshot),
             subscribe: (listener) => useNetStore.getState().subscribePeer(listener),
           }
         : null;

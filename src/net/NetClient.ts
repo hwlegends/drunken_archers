@@ -1,4 +1,11 @@
-import type { ClientMessage, MatchMessage, ServerMessage } from './protocol';
+import {
+  decodeSnapshot,
+  encodeSnapshot,
+  type ClientMessage,
+  type MatchMessage,
+  type ServerMessage,
+  type Snapshot,
+} from './protocol';
 
 /** The port `server/lobby-server.mjs` listens on unless PORT says otherwise. */
 const LOBBY_PORT = '8787';
@@ -76,6 +83,8 @@ export class NetClient {
       return;
     }
     this.socket = socket;
+    // Snapshots arrive as raw bytes; anything else is text.
+    socket.binaryType = 'arraybuffer';
 
     socket.onopen = () => {
       this.attempt = 0;
@@ -84,6 +93,14 @@ export class NetClient {
     };
 
     socket.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        // The relay forwards these untouched, so there is no envelope to strip:
+        // a binary frame in a match is a snapshot and nothing else.
+        const snapshot = decodeSnapshot(event.data);
+        if (snapshot) this.handlers.onMessage({ t: 'peer', d: { k: 'snap', s: snapshot } });
+        return;
+      }
+
       let message: ServerMessage;
       try {
         message = JSON.parse(String(event.data)) as ServerMessage;
@@ -137,6 +154,18 @@ export class NetClient {
   /** Forwards a match message to the opponent, if there is one. */
   relay(message: MatchMessage): void {
     this.send({ t: 'relay', d: message });
+  }
+
+  /**
+   * The hot path: one frame of the host's world, packed and sent raw.
+   *
+   * It skips the `relay` envelope entirely — the server forwards a binary frame
+   * to the paired socket without decoding it, so a snapshot is never parsed and
+   * re-serialised on its way through.
+   */
+  relaySnapshot(snapshot: Snapshot): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(encodeSnapshot(snapshot));
   }
 
   /** Closes the socket. `permanent` also stops it from reconnecting. */

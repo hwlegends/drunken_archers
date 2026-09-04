@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { Side } from '../types';
 import { NetClient, defaultLobbyUrl, type NetStatus } from './NetClient';
-import type { LobbyPlayer, MatchMessage, MatchRole, ServerMessage } from './protocol';
+import type { LobbyPlayer, MatchMessage, MatchRole, ServerMessage, Snapshot } from './protocol';
 
 const STORAGE = {
   name: 'drunkenArchers.playerName.v1',
@@ -89,6 +89,7 @@ interface NetState {
   decline: (id: string) => void;
   leaveMatch: () => void;
   relay: (message: MatchMessage) => void;
+  relaySnapshot: (snapshot: Snapshot) => void;
   subscribePeer: (listener: PeerListener) => () => void;
 }
 
@@ -254,6 +255,8 @@ export const useNetStore = create<NetState>((set, get) => {
     },
 
     relay: (message) => ensureClient().relay(message),
+
+    relaySnapshot: (snapshot) => ensureClient().relaySnapshot(snapshot),
 
     subscribePeer: (listener) => {
       peerListeners.add(listener);

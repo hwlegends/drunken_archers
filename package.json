@@ -13,6 +13,7 @@
     "sim-check": "node scripts/run-sim-check.mjs",
     "visual-check": "node scripts/visual-check.mjs",
     "online-check": "node scripts/online-check.mjs",
+    "wire-check": "node scripts/wire-check.mjs",
     "match-flow-check": "node scripts/match-flow-check.mjs"
   },
   "dependencies": {

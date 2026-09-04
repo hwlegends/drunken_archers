@@ -31,6 +31,17 @@ const MAX_RELAY_BYTES = 64 * 1024;
 /** Sockets that miss two heartbeats are dropped and removed from the lobby. */
 const HEARTBEAT_MS = 15000;
 
+/**
+ * Development aid: hold every relayed frame this long before passing it on.
+ *
+ * Two computers on a desk share a sub-millisecond link, which is the one
+ * condition under which none of the lag compensation matters. Setting
+ * `LOBBY_DELAY_MS=120` makes the same two computers behave like two cities, so
+ * a change to the interpolation buffer or to how a remote release is rewound can
+ * actually be felt. Zero, and off, in normal use.
+ */
+const RELAY_DELAY_MS = Math.max(0, Number(process.env.LOBBY_DELAY_MS ?? 0));
+
 /* ------------------------------------------------------------------ *
  * Static file serving
  * ------------------------------------------------------------------ */
@@ -279,9 +290,31 @@ const HANDLERS = {
     if (raw.length > MAX_RELAY_BYTES) return;
     const opponent = clients.get(client.opponentId);
     // Only ever to the one socket paired with this one.
-    if (opponent) send(opponent, { t: 'peer', d: msg.d });
+    if (opponent) delayed(() => send(opponent, { t: 'peer', d: msg.d }));
   },
 };
+
+/** Applies the development delay, or runs immediately when it is off. */
+function delayed(fn) {
+  if (RELAY_DELAY_MS > 0) setTimeout(fn, RELAY_DELAY_MS);
+  else fn();
+}
+
+/**
+ * Binary frames are snapshots, and they are the only traffic that arrives
+ * continuously. They are forwarded byte for byte: parsing thirty frames a
+ * second only to re-serialise them would burn CPU on this hop for nothing, and
+ * this process has no business knowing what is in them anyway.
+ */
+function relayBinary(client, raw) {
+  if (client.status !== 'inMatch' || !client.opponentId) return;
+  if (raw.length > MAX_RELAY_BYTES) return;
+  const opponent = clients.get(client.opponentId);
+  if (!opponent) return;
+  delayed(() => {
+    if (opponent.ws.readyState === 1) opponent.ws.send(raw, { binary: true });
+  });
+}
 
 /* ------------------------------------------------------------------ *
  * Wiring
@@ -316,7 +349,11 @@ wss.on('connection', (ws) => {
     client.alive = true;
   });
 
-  ws.on('message', (raw) => {
+  ws.on('message', (raw, isBinary) => {
+    if (isBinary) {
+      relayBinary(client, raw);
+      return;
+    }
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -366,6 +403,9 @@ httpServer.listen(PORT, () => {
   console.log('  This computer   http://localhost:' + PORT);
   for (const address of localAddresses()) {
     console.log('  Other computer  http://' + address + ':' + PORT);
+  }
+  if (RELAY_DELAY_MS > 0) {
+    console.log('\n  Relay delayed by ' + RELAY_DELAY_MS + 'ms each way (LOBBY_DELAY_MS)');
   }
   console.log('\n  Serving ' + ROOT + '\n');
 });
