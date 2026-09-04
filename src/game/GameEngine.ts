@@ -451,7 +451,7 @@ export class GameEngine {
     if (this.net) {
       if (side !== this.net.side) return;
       if (this.net.role === 'guest') {
-        this.net.send({ k: 'in', down: true, lag: Math.round(this.remote.viewLagMs) });
+        this.net.send({ k: 'in', down: true, at: Math.round(this.remote.displayedHostTime) });
         this.beginPredictedDraw(side);
         return;
       }
@@ -463,7 +463,7 @@ export class GameEngine {
     if (this.net) {
       if (side !== this.net.side) return;
       if (this.net.role === 'guest') {
-        this.net.send({ k: 'in', down: false, lag: Math.round(this.remote.viewLagMs) });
+        this.net.send({ k: 'in', down: false, at: Math.round(this.remote.displayedHostTime) });
         this.endPredictedDraw();
         return;
       }
@@ -530,12 +530,12 @@ export class GameEngine {
     }
   }
 
-  private applyRelease(side: Side, local: boolean, viewLagMs = 0): void {
+  private applyRelease(side: Side, local: boolean, seenAt = 0): void {
     const bow = this.bows[side];
     if (!bow) return;
     if (this.players[side].controller === 'cpu') return;
 
-    const shot = bow.release(local ? undefined : this.rewoundAim(viewLagMs));
+    const shot = bow.release(local ? undefined : this.rewoundAim(seenAt));
     if (local) audioManager.stopDraw();
     if (shot) {
       audioManager.play('bowRelease');
@@ -546,22 +546,26 @@ export class GameEngine {
   /**
    * The remote archer's bow as that player actually saw it when they let go.
    *
-   * Two delays stand between the two screens, and both have to come off. The
-   * message spent a full round trip in the air — half of it carrying the frame
-   * they were looking at, half of it carrying their release back. On top of
-   * that their screen is deliberately running a little behind the frames it has,
-   * to smooth out jitter, and that buffer is theirs to report.
+   * `seenAt` is an instant on this machine's own clock, because that is what the
+   * guest's screen is running on: it plays the frames back a fixed distance
+   * behind the timestamps in them, and reports where that playback point had
+   * reached. So there is nothing to estimate here — no round trip, no guess at
+   * their buffer — only a lookup.
    *
-   * Rewinding by half a trip, as this first did, left roughly a tenth of a
-   * second uncorrected: enough for the bow to sweep several degrees, which over
-   * the width of an arena is most of an archer. It read as the game ignoring
-   * where you aimed.
+   * The first version of this rewound by half a round trip and ignored their
+   * buffer entirely, leaving about a tenth of a second uncorrected. A tenth of a
+   * second is several degrees of bow sweep, which across an arena is most of an
+   * archer; it read as the game ignoring where you aimed.
    */
-  private rewoundAim(viewLagMs: number): { angle: number; position: Vec2 } | undefined {
-    const rewind = Math.min(MAX_REWIND_MS, this.rttMs + viewLagMs);
-    if (rewind < TIME.step || !this.aimHistory.length) return undefined;
+  private rewoundAim(seenAt: number): { angle: number; position: Vec2 } | undefined {
+    if (!this.aimHistory.length) return undefined;
 
-    const at = performance.now() - rewind;
+    const now = performance.now();
+    // A client cannot ask to shoot at an arbitrary moment: the window is the
+    // history that is kept, and never into the future.
+    const at = Math.max(now - MAX_REWIND_MS, Math.min(seenAt, now));
+    if (now - at < TIME.step) return undefined;
+
     // Samples are appended in order, so the last one at or before `at` is the
     // newest pose that player could possibly have seen.
     let chosen = this.aimHistory[0];
@@ -615,7 +619,7 @@ export class GameEngine {
       this.camera.update(delta / 1000);
     }
 
-    if (this.net) this.netFrame(now);
+    if (this.net) this.netFrame(now, delta);
 
     this.render();
   };
@@ -641,7 +645,7 @@ export class GameEngine {
   }
 
   /** Snapshots and the latency probe, on whichever end owns them. */
-  private netFrame(now: number): void {
+  private netFrame(now: number, delta: number): void {
     const net = this.net;
     if (!net) return;
 
@@ -651,7 +655,18 @@ export class GameEngine {
     }
 
     if (net.role === 'host') {
-      if (this.arena && now - this.lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
+      /**
+       * Send on whichever animation frame lands nearest the target, rather than
+       * on the first one strictly past it.
+       *
+       * A 60Hz display ticks a shade under 16.667ms, so two frames come to a
+       * shade under 33.333ms and a strict test rejects them — the send slips to
+       * every third frame, 20 a second instead of 30, and alternates with the
+       * occasional pair that does make it. Measured, that alone left the guest
+       * with frames 31 to 53ms apart on a link with no network in it at all.
+       */
+      const due = SNAPSHOT_INTERVAL_MS - Math.min(delta, SNAPSHOT_INTERVAL_MS) / 2;
+      if (this.arena && now - this.lastSnapshotAt >= due) {
         this.lastSnapshotAt = now;
         net.sendSnapshot(this.buildSnapshot());
       }
@@ -874,6 +889,9 @@ export class GameEngine {
 
     return {
       n: ++this.snapshotSeq,
+      // The same clock the aim history is stamped with, so a guest can name an
+      // instant and the host can look it straight up.
+      t: Math.round(performance.now()),
       b: bodies,
       a: arrows,
       bw: [leftPhase, leftCharge, rightPhase, rightCharge],
@@ -913,7 +931,7 @@ export class GameEngine {
         // Only the host acts on a button, and only ever for the other archer.
         if (this.net.role !== 'host') break;
         if (message.down) this.applyPress(OTHER[this.net.side], false);
-        else this.applyRelease(OTHER[this.net.side], false, message.lag);
+        else this.applyRelease(OTHER[this.net.side], false, message.at);
         break;
 
       case 'ready': {

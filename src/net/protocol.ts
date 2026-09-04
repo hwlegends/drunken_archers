@@ -62,6 +62,15 @@ export type ServerMessage =
 export interface Snapshot {
   /** Host's frame counter, so an out-of-order or duplicated frame is dropped. */
   n: number;
+  /**
+   * When the host produced this frame, on the host's clock.
+   *
+   * The guest spaces frames apart by this rather than by when they happened to
+   * arrive. Arrival gaps carry every wobble in the network, and interpolating
+   * across them turns that wobble into the world visibly speeding up and
+   * slowing down; the host's own spacing is what the motion actually was.
+   */
+  t: number;
   /** Flattened `[x, y, angle]` triples, left archer first. */
   b: number[];
   /** Arrows in flight: `[id, ownerIsLeft, x, y, angle]` per arrow. */
@@ -90,11 +99,14 @@ export type MatchMessage =
    */
   | { k: 'ev'; n: string; a: unknown[] }
   /**
-   * Guest: its own charge button went down or up. `lag` is how far behind the
-   * host's live world the guest's screen was at that moment, which the host
-   * needs in order to rewind a release to the pose the player actually saw.
+   * Guest: its own charge button went down or up.
+   *
+   * `at` is the host-clock time the guest's screen was displaying at that
+   * moment, read straight off the frames it was interpolating. The host rewinds
+   * a release to exactly that instant, so no estimate of the round trip enters
+   * the shot at all.
    */
-  | { k: 'in'; down: boolean; lag: number }
+  | { k: 'in'; down: boolean; at: number }
   /**
    * Guest: "I am here, tell me where we are." Both browsers build their engine
    * at the same moment, so whichever spoke first may have spoken to nobody.
@@ -136,7 +148,7 @@ export const BOW_PHASES = ['reloading', 'ready', 'drawing', 'released'] as const
 const POS_SCALE = 4;
 const ANGLE_SCALE = 10000;
 /** Bytes before the body array. Kept even so the 16-bit fields stay aligned. */
-const HEADER_BYTES = 12;
+const HEADER_BYTES = 16;
 const BODY_BYTES = 6;
 const ARROW_BYTES = 8;
 
@@ -158,13 +170,16 @@ export function encodeSnapshot(snap: Snapshot): ArrayBuffer {
   const view = new DataView(buffer);
 
   view.setUint32(0, snap.n, true);
-  view.setUint8(4, (snap.d[0] ? 1 : 0) | (snap.d[1] ? 2 : 0));
-  view.setUint8(5, snap.bw[0]);
-  view.setUint8(6, Math.round(Math.max(0, Math.min(1, snap.bw[1])) * 255));
-  view.setUint8(7, snap.bw[2]);
-  view.setUint8(8, Math.round(Math.max(0, Math.min(1, snap.bw[3])) * 255));
-  view.setUint8(9, bodyCount);
-  view.setUint8(10, arrowCount);
+  // Milliseconds since the host's page loaded. Wraps after seven weeks of one
+  // continuous session, which is not a match anybody is playing.
+  view.setUint32(4, snap.t >>> 0, true);
+  view.setUint8(8, (snap.d[0] ? 1 : 0) | (snap.d[1] ? 2 : 0));
+  view.setUint8(9, snap.bw[0]);
+  view.setUint8(10, Math.round(Math.max(0, Math.min(1, snap.bw[1])) * 255));
+  view.setUint8(11, snap.bw[2]);
+  view.setUint8(12, Math.round(Math.max(0, Math.min(1, snap.bw[3])) * 255));
+  view.setUint8(13, bodyCount);
+  view.setUint8(14, arrowCount);
 
   let at = HEADER_BYTES;
   for (let i = 0; i < bodyCount * 3; i += 3) {
@@ -193,12 +208,12 @@ export function decodeSnapshot(buffer: ArrayBuffer): Snapshot | null {
   if (buffer.byteLength < HEADER_BYTES) return null;
   const view = new DataView(buffer);
 
-  const bodyCount = view.getUint8(9);
-  const arrowCount = view.getUint8(10);
+  const bodyCount = view.getUint8(13);
+  const arrowCount = view.getUint8(14);
   const expected = HEADER_BYTES + bodyCount * BODY_BYTES + arrowCount * ARROW_BYTES;
   if (buffer.byteLength !== expected) return null;
 
-  const flags = view.getUint8(4);
+  const flags = view.getUint8(8);
   const b = new Array<number>(bodyCount * 3);
   const a = new Array<number>(arrowCount * 5);
 
@@ -222,9 +237,10 @@ export function decodeSnapshot(buffer: ArrayBuffer): Snapshot | null {
 
   return {
     n: view.getUint32(0, true),
+    t: view.getUint32(4, true),
     b,
     a,
-    bw: [view.getUint8(5), view.getUint8(6) / 255, view.getUint8(7), view.getUint8(8) / 255],
+    bw: [view.getUint8(9), view.getUint8(10) / 255, view.getUint8(11), view.getUint8(12) / 255],
     d: [flags & 1 ? 1 : 0, flags & 2 ? 1 : 0],
   };
 }

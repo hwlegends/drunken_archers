@@ -42,6 +42,15 @@ const HEARTBEAT_MS = 15000;
  */
 const RELAY_DELAY_MS = Math.max(0, Number(process.env.LOBBY_DELAY_MS ?? 0));
 
+/**
+ * Development aid: spread each frame's delay randomly by up to this much.
+ *
+ * A constant delay is a fair test of latency but not of a real network, which
+ * delivers unevenly. Jitter is what a guest's playback buffer exists to absorb,
+ * so `LOBBY_JITTER_MS=25` is how you find out whether it does.
+ */
+const RELAY_JITTER_MS = Math.max(0, Number(process.env.LOBBY_JITTER_MS ?? 0));
+
 /* ------------------------------------------------------------------ *
  * Static file serving
  * ------------------------------------------------------------------ */
@@ -296,8 +305,11 @@ const HANDLERS = {
 
 /** Applies the development delay, or runs immediately when it is off. */
 function delayed(fn) {
-  if (RELAY_DELAY_MS > 0) setTimeout(fn, RELAY_DELAY_MS);
-  else fn();
+  if (RELAY_DELAY_MS <= 0 && RELAY_JITTER_MS <= 0) {
+    fn();
+    return;
+  }
+  setTimeout(fn, RELAY_DELAY_MS + Math.random() * RELAY_JITTER_MS);
 }
 
 /**

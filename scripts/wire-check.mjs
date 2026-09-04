@@ -54,14 +54,44 @@ const GUEST_UPLOAD_BUDGET = 1;
 const FRAME_BUDGET = 320;
 
 /**
- * Counts every byte the page puts on or takes off a socket, by wrapping the
- * WebSocket it is about to construct. Nothing in the game is aware of it.
+ * How much rougher than the host's own motion the guest is allowed to be.
+ *
+ * Interpolating 30 frames a second up to 60 is piecewise linear, so it can never
+ * be quite as smooth as the physics that produced it. Anything much beyond this
+ * is not interpolation, it is the world lurching.
+ */
+const ROUGHNESS_BUDGET = 2.5;
+
+/**
+ * Counts every byte the page puts on or takes off a socket, and samples where
+ * the archers are actually drawn each frame.
+ *
+ * The drawn position is read by wrapping `ctx.ellipse`, which the renderer calls
+ * once per archer with the torso's world coordinates to lay down its ground
+ * shadow. Nothing in the game is aware of any of this.
  */
 const INSTRUMENT = () => {
-  const wire = { sent: 0, sentN: 0, recv: 0, recvN: 0, binN: 0, binBytes: 0, frames: [] };
+  const wire = { sent: 0, sentN: 0, recv: 0, recvN: 0, binN: 0, binBytes: 0, frames: [], xs: [] };
   window.__wire = wire;
   const sizeOf = (d) =>
     typeof d === 'string' ? new TextEncoder().encode(d).length : (d.byteLength ?? d.size ?? 0);
+
+  let frame = 0;
+  let sampled = -1;
+  const ellipse = CanvasRenderingContext2D.prototype.ellipse;
+  CanvasRenderingContext2D.prototype.ellipse = function (x, y, rx, ry, ...rest) {
+    // The ground shadow is the only 28x7 ellipse drawn, once per archer.
+    if (rx === 28 && ry === 7 && sampled !== frame) {
+      sampled = frame;
+      wire.xs.push(x);
+    }
+    return ellipse.call(this, x, y, rx, ry, ...rest);
+  };
+  const tick = () => {
+    frame++;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 
   const Original = window.WebSocket;
   function Wrapped(...args) {
@@ -89,11 +119,28 @@ const INSTRUMENT = () => {
   window.WebSocket = Wrapped;
 };
 
+/**
+ * How ragged a sampled path is: the average change in step size from one frame
+ * to the next, over the average step. Smooth motion barely changes speed
+ * between frames; a world that freezes and catches up changes it enormously.
+ */
+function roughness(xs) {
+  const steps = [];
+  for (let i = 1; i < xs.length; i++) steps.push(xs[i] - xs[i - 1]);
+  const moving = steps.filter((v) => Math.abs(v) > 1e-9);
+  if (moving.length < 30) return null;
+  const meanStep = moving.reduce((a, b) => a + Math.abs(b), 0) / moving.length;
+  let change = 0;
+  for (let i = 1; i < steps.length; i++) change += Math.abs(steps[i] - steps[i - 1]);
+  change /= steps.length - 1;
+  return { meanStep, ratio: change / (meanStep || 1) };
+}
+
 /* ------------------------------------------------------------------ *
  * One measured match
  * ------------------------------------------------------------------ */
 
-async function runMatch({ delayMs, seconds, label }) {
+async function runMatch({ delayMs, jitterMs = 0, seconds, label }) {
   const port = await new Promise((res, rej) => {
     const probe = createServer();
     probe.on('error', rej);
@@ -105,7 +152,12 @@ async function runMatch({ delayMs, seconds, label }) {
 
   const server = spawn(process.execPath, [resolve(root, 'server/lobby-server.mjs')], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), LOBBY_DELAY_MS: String(delayMs) },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      LOBBY_DELAY_MS: String(delayMs),
+      LOBBY_JITTER_MS: String(jitterMs),
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   await new Promise((ready, reject) => {
@@ -159,6 +211,7 @@ async function runMatch({ delayMs, seconds, label }) {
         const w = window.__wire;
         w.sent = w.sentN = w.recv = w.recvN = w.binN = w.binBytes = 0;
         w.frames = [];
+        w.xs = [];
       });
     await Promise.all([reset(host), reset(guest)]);
 
@@ -185,6 +238,8 @@ async function runMatch({ delayMs, seconds, label }) {
     return {
       label,
       elapsed,
+      hostMotion: roughness(hostWire.xs),
+      guestMotion: roughness(guestWire.xs),
       hostUp: hostWire.sent / elapsed / 1024,
       guestUp: guestWire.sent / elapsed / 1024,
       guestDown: guestWire.recv / elapsed / 1024,
@@ -233,10 +288,22 @@ note(
   local.frameRate.toFixed(0) + '/s',
 );
 note(local.alive, 'the match is running, not stalled');
+note(
+  local.guestMotion !== null && local.hostMotion !== null &&
+    local.guestMotion.ratio < local.hostMotion.ratio * ROUGHNESS_BUDGET,
+  'the guest draws the world about as smoothly as the host runs it',
+  local.guestMotion && local.hostMotion
+    ? 'guest ' + local.guestMotion.ratio.toFixed(2) + ' vs host ' + local.hostMotion.ratio.toFixed(2)
+    : 'not enough motion sampled',
+);
 
-const DELAY = 120;
-console.log('\nThrough a relay holding every frame ' + DELAY + 'ms each way:');
-const slow = await runMatch({ delayMs: DELAY, seconds: 16, label: 'slow' });
+const DELAY = 60;
+const JITTER = 30;
+console.log(
+  '\nThrough a relay holding every frame ' + DELAY + 'ms each way, unevenly by up to ' +
+    JITTER + 'ms more:',
+);
+const slow = await runMatch({ delayMs: DELAY, jitterMs: JITTER, seconds: 16, label: 'slow' });
 console.log(
   '  host up ' + slow.hostUp.toFixed(1) + ' KB/s   frames ' + slow.frameRate.toFixed(0) +
     '/s of ' + slow.frameMedian + ' bytes   reported ping ' + slow.ping + 'ms',
@@ -250,7 +317,7 @@ note(
 );
 // The probe crosses the relay twice, so it should read about two delays.
 note(
-  slow.ping !== null && slow.ping >= DELAY * 1.5 && slow.ping <= DELAY * 2 + 90,
+  slow.ping !== null && slow.ping >= DELAY * 1.5 && slow.ping <= (DELAY + JITTER) * 2 + 90,
   'the round trip is measured honestly',
   slow.ping + 'ms across a ' + DELAY + 'ms each-way relay',
 );
@@ -258,6 +325,17 @@ note(
   slow.hostUp < HOST_UPLOAD_BUDGET,
   'a slow link does not inflate what the host sends',
   slow.hostUp.toFixed(1) + ' KB/s',
+);
+// The one that matters. Frames are spaced apart by the host's own timestamps
+// rather than by when they turned up, so uneven delivery must not become
+// uneven motion.
+note(
+  slow.guestMotion !== null && slow.hostMotion !== null &&
+    slow.guestMotion.ratio < slow.hostMotion.ratio * ROUGHNESS_BUDGET,
+  'jitter on the wire does not become jitter on screen',
+  slow.guestMotion && slow.hostMotion
+    ? 'guest ' + slow.guestMotion.ratio.toFixed(2) + ' vs host ' + slow.hostMotion.ratio.toFixed(2)
+    : 'not enough motion sampled',
 );
 
 console.log('');

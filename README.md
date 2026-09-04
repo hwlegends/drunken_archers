@@ -160,24 +160,46 @@ A few details worth knowing:
   as raw bytes without decoding. The figure that matters is the host's *upload*,
   because a saturated uplink does not drop frames politely: it delays them, and
   that delay arrives as jitter the guest has to buffer against.
-- **Frames are played back late, on purpose — but only as late as the link
-  requires.** `RemoteView` interpolates towards the newest frame rather than
-  drawing it on arrival, because drawing on arrival turns ordinary jitter into
-  visible stutter. Every millisecond of that buffer is a millisecond of lag on
-  everything you see, so its size is one frame interval plus the jitter this
-  particular connection has actually shown, measured continuously. A steady link
-  pays about 40ms where a flat multiple of the frame rate charged 60ms, and a
-  bad link now widens the buffer instead of stuttering through it.
-- **A remote release is rewound to what that player could see.** The shot
-  direction is the bow angle at the instant of release, so two delays stand
-  between the two screens: the round trip, and the guest's own playback buffer.
-  Both come off. Rewinding by half a trip — which is what this did first — left
-  about a tenth of a second uncorrected, and a tenth of a second is several
-  degrees of bow sweep, which across an arena is most of an archer. It read as
-  the game ignoring where you aimed. The host keeps 500ms of bow poses and the
-  guest reports its own buffer with every button; the correction is capped at
-  250ms, past which favouring the shooter costs the other player more than it is
-  worth.
+- **The guest plays back on the host's clock, not on its own.** Every frame
+  carries the host time it was made at, and the guest spaces frames apart by
+  that rather than by when they turned up. Spacing them by arrival is the
+  obvious thing to do and it is wrong: two frames a frame-time of motion apart,
+  arriving 12ms apart, play that motion three times too fast, and the next pair
+  play it too slow. The archers surge and stall on any link with jitter in it —
+  which is every link that is not a desk. Host timestamps play the motion at the
+  rate it was made, and leave jitter to decide only how much slack is needed.
+- **That playback clock is steered, not set.** It runs at real time and is
+  nudged a few percent when it drifts from where it should be, rather than being
+  recomputed each frame — because the things it is computed from move in steps.
+  The clock-offset estimate drops the instant a frame arrives unusually early;
+  the buffer widens the moment the link gets rougher. Set directly, each of those
+  is a jump in the world. Nobody can see 8%; everybody can see a jump. Falling
+  back is allowed to be four times more urgent than catching up, because running
+  ahead means reaching the end of what has arrived, and that is a freeze.
+- **The buffer is sized on the worst recent frame, not the average one.** The
+  average is not what empties it: one frame 30ms late runs playback off the end
+  and the world stops until it lands. The peak lateness is held and forgiven
+  slowly, so a link that settles down earns its latency back over a second or
+  two. Measured through a relay adding 60ms and up to 30ms of jitter, this took
+  the guest from starving on one frame in ten to none.
+- **Snapshots are sent on whichever animation frame lands nearest the mark.** A
+  60Hz display ticks a shade under 16.667ms, so two frames come to a shade under
+  33.333ms — and a strict `>=` test against a 30Hz interval rejects them, slips
+  to every third frame, and delivers 20 a second while alternating with the odd
+  pair that does make it. Measured, that alone left the guest with frames 31 to
+  53ms apart on a link with no network in it at all. It is the single largest
+  cause of the stutter this once had.
+- **A remote release is rewound to the instant that player could see.** The shot
+  direction is the bow angle at the moment of release, so the delay between the
+  two screens has to come off it. Because playback runs on the host's clock, the
+  guest can simply name the host-clock instant its screen was showing, and the
+  host looks that up in 500ms of kept bow poses. Nothing is estimated — not the
+  round trip, not the buffer. The first version rewound by half a round trip and
+  ignored the buffer entirely, leaving about a tenth of a second uncorrected;
+  a tenth of a second is several degrees of bow sweep, which across an arena is
+  most of an archer, and it read as the game ignoring where you aimed. The
+  rewind is capped at 250ms, past which favouring the shooter costs the other
+  player more than it is worth.
 - **The guest draws its own bow before the host confirms it.** A button that
   produces no feedback for a round trip feels like a slow game even when the
   match is healthy. A charge is only elapsed time, and the press and the release
@@ -196,7 +218,7 @@ A few details worth knowing:
 ## Verification
 
 ```bash
-npm run sim-check          # 80 headless physics/combat/AI/codec assertions
+npm run sim-check          # 81 headless physics/combat/AI/codec assertions
 npm run visual-check       # drives the built game in Chrome, writes shots/
 npm run online-check       # two browsers play a real match through the real lobby
 npm run wire-check         # measures what a match costs on the wire, twice
@@ -217,19 +239,28 @@ button reached the host, the host's world reached the guest, and neither drifted
 in between. It uses two browsers rather than two tabs because a background tab
 gets no animation frames, and the host's animation frame is the match.
 
-`wire-check` plays the same match twice and counts bytes, holding the host to an
-upload budget and a frame to 320 bytes, so a change that quietly triples the
-traffic fails rather than merely feeling worse. The second run goes through a
-relay holding every frame 120ms each way.
+`wire-check` plays the same match twice and measures it, holding the host to an
+upload budget and a frame to 320 bytes so a change that quietly triples the
+traffic fails rather than merely feeling worse. It also samples where the archers
+are actually drawn on each screen, frame by frame, and compares how raggedly the
+guest moves them to how raggedly the host does — which is the only assertion that
+would have caught the stutter that motivated all of the above. The second run
+goes through a relay adding 60ms each way and up to 30ms of jitter, because
+jitter is the condition the playback clock exists for.
 
-Two computers on a desk share a link fast enough that none of the lag
-compensation matters, which is exactly the condition under which it cannot be
-tested. `LOBBY_DELAY_MS` makes the relay hold every frame for a set delay, so
-the same two computers behave like two cities:
+Two computers on a desk share a link fast enough that none of this matters,
+which is exactly the condition under which none of it can be tested.
+`LOBBY_DELAY_MS` holds every frame for a set delay and `LOBBY_JITTER_MS` spreads
+that delay randomly, so the same two computers behave like two cities on a bad
+afternoon:
 
 ```bash
-LOBBY_DELAY_MS=120 npm run lobby
+LOBBY_DELAY_MS=60 LOBBY_JITTER_MS=30 npm run lobby
 ```
+
+The delay is what the rewind exists for; the jitter is what the playback clock
+exists for. Both suites accept them, so `LOBBY_DELAY_MS=60 LOBBY_JITTER_MS=40
+npm run online-check` plays a full match under one.
 
 ## About the reference material
 

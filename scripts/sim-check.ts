@@ -840,6 +840,7 @@ section('12. Snapshot codec');
 
   const snapshot = {
     n: 4242,
+    t: 1234567,
     b: bodies,
     a: arrows,
     bw: [BOW_PHASES.indexOf('drawing'), 0.63, BOW_PHASES.indexOf('reloading'), 0] as [number, number, number, number],
@@ -870,6 +871,9 @@ section('12. Snapshot codec');
     decoded.a.length === arrows.length &&
       decoded.a.every((v, i) => (i % 5 < 2 ? v === arrows[i] : true)),
     decoded.a.length / 5 + ' arrows');
+
+  check('the host timestamp survives, since playback is spaced by it',
+    decoded.t === snapshot.t, decoded.t + ' vs ' + snapshot.t);
 
   check('bow phase, charge and defeat flags survive',
     decoded.n === snapshot.n &&
