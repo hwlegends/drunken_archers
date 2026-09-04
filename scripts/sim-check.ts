@@ -8,7 +8,7 @@
  *   npm run sim-check
  */
 import Matter from 'matter-js';
-import { AI, BOW, COMBAT, MATCH, PHYSICS, PROJECTILE, RAGDOLL, TIME, VIEW } from '../src/config/constants';
+import { AI, BOW, COMBAT, MATCH, PHYSICS, PROJECTILE, RAGDOLL, STEP, TIME, VIEW } from '../src/config/constants';
 import { createArena, generateArrangement, makeRng, validateArrangement } from '../src/config/arenas';
 import { AIController } from '../src/game/AIController';
 import { BowController } from '../src/game/BowController';
@@ -821,10 +821,87 @@ section('11. State machine');
 }
 
 /* ------------------------------------------------------------------ *
- * 12. Snapshot codec — the only thing an online guest ever sees
+ * 12. The optional sidestep
  * ------------------------------------------------------------------ */
 
-section('12. Snapshot codec');
+section('12. Sidestep');
+{
+  const rig = makeRig('desert', 5150);
+  const archer = rig.ragdolls.left;
+  const platform = rig.arena.platforms.left;
+  const reach = platform.width / 2 - STEP.edgeMargin;
+  archer.stepBounds = { minX: platform.x - reach, maxX: platform.x + reach };
+
+  /**
+   * Hold the swing still. The archer leans through a wide arc, which moves the
+   * torso far further than a step does, so with the swing running a step is
+   * unmeasurable at the body. Stopping the swing rate freezes the lean without
+   * stopping the pose, which is what carries the step.
+   */
+  archer.swingRate = 0;
+  archer.swingRateTarget = 0;
+  archer.swingRateTimer = Number.MAX_SAFE_INTEGER;
+  rig.step(4);
+
+  const startX = archer.pivot.x;
+  const startTorso = archer.torso.position.x;
+
+  check('an archer starts with no step running', archer.stepElapsed < 0 && archer.stepCooldown === 0);
+
+  check('a step is accepted while standing', SwayController.step(archer, 1));
+  check('a second step is refused until the first has settled', !SwayController.step(archer, 1));
+
+  // Run out the glide.
+  rig.step(Math.ceil(STEP.durationMs / TIME.step) + 2);
+  check(
+    'one step covers its fixed distance and no more',
+    near(archer.pivot.x - startX, STEP.distance, 0.5),
+    (archer.pivot.x - startX).toFixed(1) + 'px of ' + STEP.distance,
+  );
+  check(
+    'the body actually travels with the feet',
+    near(archer.torso.position.x - startTorso, STEP.distance, 2),
+    (archer.torso.position.x - startTorso).toFixed(1) + 'px of ' + STEP.distance,
+  );
+  check('the step ends rather than drifting on', archer.stepElapsed < 0);
+
+  // The glide is over but the cooldown outlasts it, which is what stops the
+  // step from being held down as a walk.
+  check('the cooldown outlives the glide', !SwayController.step(archer, 1));
+  rig.step(Math.ceil((STEP.cooldownMs - STEP.durationMs) / TIME.step) + 2);
+  check('another step is allowed once the cooldown has run', SwayController.step(archer, 1));
+  rig.step(Math.ceil(STEP.durationMs / TIME.step) + 2);
+
+  // Walk into the edge. The platform is finite, so this must stop.
+  for (let i = 0; i < 12; i++) {
+    SwayController.step(archer, 1);
+    rig.step(Math.ceil(STEP.cooldownMs / TIME.step) + 2);
+  }
+  check(
+    'stepping cannot walk an archer off its platform',
+    archer.pivot.x <= archer.stepBounds.maxX + 0.5,
+    archer.pivot.x.toFixed(1) + ' against a limit of ' + archer.stepBounds.maxX.toFixed(1),
+  );
+  check(
+    'and still leaves the feet on the surface',
+    archer.pivot.x < platform.x + platform.width / 2,
+    (platform.x + platform.width / 2 - archer.pivot.x).toFixed(1) + 'px of ledge to spare',
+  );
+  check('a step against the edge is refused, not swallowed', !SwayController.step(archer, 1));
+
+  // A toppled archer is a ragdoll; there is no pose for a step to move.
+  const other = rig.ragdolls.right;
+  SwayController.releaseRagdoll(other);
+  check('a toppled archer cannot step', !SwayController.step(other, -1));
+
+  rig.physics.destroy();
+}
+
+/* ------------------------------------------------------------------ *
+ * 13. Snapshot codec — the only thing an online guest ever sees
+ * ------------------------------------------------------------------ */
+
+section('13. Snapshot codec');
 {
   // A whole frame: two eleven-piece archers plus their bows, and a few arrows.
   const bodyCount = 24;

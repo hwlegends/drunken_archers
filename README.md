@@ -19,6 +19,11 @@ drunken wobble is the whole game.
 Headshots are instantly fatal, body and limb hits chip away at 100 health, and
 falling off the arena is just as deadly.
 
+**Sidestep** is an optional tick in the menu, off by default. With it on, `←`
+and `→` shift your archer a short fixed distance along its platform, on a
+cooldown, and never off the edge. It is deliberately small: the game is reading
+a wobble you cannot control, and being able to walk freely would undo it.
+
 ## Running it
 
 ```bash
@@ -67,6 +72,7 @@ and the side that uploads.
 | One Player / Deathmatch | Hold and release `↑`, or press and hold anywhere on the arena |
 | Two Players | `W` for blue, `↑` for orange; on touch, the left and right halves (both at once) |
 | Online | `↑`, `W` or `Space` — all three drive your archer, whichever side you were given |
+| Sidestep (optional) | `←` `→`; in Two Players, `A` `D` for blue and `←` `→` for orange |
 | Pause | `Esc` or `P`, or the pause button. Online has no pause; the button leaves the match |
 
 ## Architecture
@@ -131,6 +137,22 @@ A few details worth knowing:
   over-constrains it until the solver pumps in energy. Posing cannot wind up or
   blow up. Every joint is held inert while the archer stands, and `CombatSystem`
   restores them the moment it topples or dies, so the ragdoll takes over intact.
+- **A sidestep moves the pivot, not the archer.** A standing archer is placed
+  relative to a point between its feet, so the whole of the optional step is
+  that point gliding a fixed distance — the body follows it as one piece and the
+  legs are re-laid by the same pose that handles the lean. Nothing is pushed, so
+  a step cannot destabilise an archer the way a shove does, and it cannot fight
+  the solver. It is clamped to the platform's usable width, because falling off
+  is already a way to lose and walking off would be a strange way to do it. The
+  option is read once, in the engine, where the keypress arrives: nothing in the
+  pose or the physics knows the setting exists.
+- **The sidestep is each player's own choice, including online.** The guest's
+  press is gated on the guest's setting before it is sent, and the host's on the
+  host's; neither imposes it on the other. There is no rewinding — unlike a shot,
+  a step changes where an archer will be from now on rather than resolving an
+  instant, so the host simply applies it when it arrives. The CPU does not use
+  it, so switching it on in One Player or Deathmatch is an advantage taken
+  knowingly.
 - **Hits cost balance.** Damage feeds a `balanceLoss` counter that recovers over
   time; cross the threshold — roughly two solid hits in quick succession — and
   the archer loses its footing, becomes a free ragdoll, and can be knocked clean
@@ -218,7 +240,7 @@ A few details worth knowing:
 ## Verification
 
 ```bash
-npm run sim-check          # 81 headless physics/combat/AI/codec assertions
+npm run sim-check          # 93 headless physics/combat/AI/codec/step assertions
 npm run visual-check       # drives the built game in Chrome, writes shots/
 npm run online-check       # two browsers play a real match through the real lobby
 npm run wire-check         # measures what a match costs on the wire, twice

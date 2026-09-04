@@ -16,7 +16,12 @@ import { canTransition } from './GameStateMachine';
  * Persistence
  * ------------------------------------------------------------------ */
 
-const DEFAULT_SETTINGS: GameSettings = { music: true, sfx: true, reducedBlood: false };
+const DEFAULT_SETTINGS: GameSettings = {
+  music: true,
+  sfx: true,
+  reducedBlood: false,
+  sidestep: false,
+};
 const DEFAULT_STATS: PersistentStats = { bestDeathmatchScore: 0, matchesPlayed: 0 };
 
 function load<T>(key: string, fallback: T): T {

@@ -1,5 +1,16 @@
 import Matter from 'matter-js';
-import { AI, BOW, COMBAT, DEATHMATCH_SKINS, MATCH, SKINS, TIME, VIEW, type Skin } from '../config/constants';
+import {
+  AI,
+  BOW,
+  COMBAT,
+  DEATHMATCH_SKINS,
+  MATCH,
+  SKINS,
+  STEP,
+  TIME,
+  VIEW,
+  type Skin,
+} from '../config/constants';
 import { BOW_PHASES, type MatchMessage, type MatchRole, type Snapshot } from '../net/protocol';
 import type {
   ArenaConfig,
@@ -147,7 +158,7 @@ export class GameEngine {
   private deathmatchScore = 0;
   private encounter = 0;
   private cpuDifficulty = 0.35;
-  private settings: GameSettings = { music: true, sfx: true, reducedBlood: false };
+  private settings: GameSettings = { music: true, sfx: true, reducedBlood: false, sidestep: false };
 
   private disposeCollision: (() => void) | null = null;
 
@@ -183,6 +194,7 @@ export class GameEngine {
     this.input = new InputManager({
       onPress: (side) => this.pressSide(side),
       onRelease: (side) => this.releaseSide(side),
+      onStep: (side, direction) => this.stepSide(side, direction),
       // There is nothing to pause online: freezing one browser would not stop
       // the other, and the host's world is the match.
       onPauseToggle: () => {
@@ -306,6 +318,11 @@ export class GameEngine {
     for (const side of SIDES) {
       const skin = this.skinFor(side);
       const ragdoll = this.ragdollFactory.create(side, arena.spawns[side], this.arenas.facingFor(side), skin);
+      // A sidestep may not walk off the ledge; the platform is the whole world
+      // an archer has, and falling off it is already a way to lose.
+      const platform = arena.platforms[side];
+      const reach = Math.max(0, platform.width / 2 - STEP.edgeMargin);
+      ragdoll.stepBounds = { minX: platform.x - reach, maxX: platform.x + reach };
       this.ragdolls[side] = ragdoll;
 
       const bow = new BowController(side, ragdoll, this.projectiles);
@@ -469,6 +486,32 @@ export class GameEngine {
       }
     }
     this.applyRelease(side, true);
+  }
+
+  /**
+   * One sidestep, if the player has the option switched on.
+   *
+   * The setting is read here rather than anywhere lower down, so an archer that
+   * cannot step simply never receives the call — nothing in the pose or the
+   * physics has a notion of the option existing.
+   */
+  private stepSide(side: Side, direction: -1 | 1): void {
+    if (!this.settings.sidestep) return;
+    if (this.net) {
+      if (side !== this.net.side) return;
+      if (this.net.role === 'guest') {
+        this.net.send({ k: 'step', dir: direction });
+        return;
+      }
+    }
+    this.applyStep(side, direction);
+  }
+
+  private applyStep(side: Side, direction: -1 | 1): void {
+    if (!this.interactive) return;
+    if (this.players[side].controller === 'cpu') return;
+    const ragdoll = this.ragdolls[side];
+    if (ragdoll) SwayController.step(ragdoll, direction);
   }
 
   /* ---- the guest's own draw, shown before the host confirms it ---- */
@@ -932,6 +975,13 @@ export class GameEngine {
         if (this.net.role !== 'host') break;
         if (message.down) this.applyPress(OTHER[this.net.side], false);
         else this.applyRelease(OTHER[this.net.side], false, message.at);
+        break;
+
+      case 'step':
+        // Whether the other player may step is their own setting, checked on
+        // their machine; this side only decides where their archer may stand.
+        if (this.net.role !== 'host') break;
+        this.applyStep(OTHER[this.net.side], message.dir);
         break;
 
       case 'ready': {

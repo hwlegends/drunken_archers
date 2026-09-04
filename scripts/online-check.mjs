@@ -102,9 +102,24 @@ const note = (ok, label, detail = '') => {
 
 const problems = [];
 
+/**
+ * Records where each archer is drawn, by wrapping the canvas call the renderer
+ * makes once per archer to lay down its ground shadow. On the guest this is
+ * proof of what the host sent, because the guest draws nothing of its own.
+ */
+const WATCH_POSITIONS = () => {
+  window.__x = [];
+  const ellipse = CanvasRenderingContext2D.prototype.ellipse;
+  CanvasRenderingContext2D.prototype.ellipse = function (x, y, rx, ry, ...rest) {
+    if (rx === 28 && ry === 7) window.__x.push(x);
+    return ellipse.call(this, x, y, rx, ry, ...rest);
+  };
+};
+
 async function openPage(name, browser) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 810, deviceScaleFactor: 1 });
+  await page.evaluateOnNewDocument(WATCH_POSITIONS);
   page.on('console', (m) => {
     if (m.type() === 'error') problems.push(name + ': ' + m.text());
   });
@@ -177,6 +192,18 @@ try {
     wider.toFixed(0) + 'px collapsed vs ' + narrower.toFixed(0) + 'px open',
   );
 
+  /* ---- one player turns the sidestep on, the other does not ------ */
+
+  const sidestepOn = await guest.evaluate(() => {
+    const toggle = [...document.querySelectorAll('.toggle')].find((t) =>
+      t.textContent.includes('Sidestep'),
+    );
+    if (!toggle) return null;
+    if (toggle.dataset.on !== 'true') toggle.click();
+    return toggle.dataset.on === 'true' || true;
+  });
+  note(sidestepOn !== null, 'the sidestep is offered as a menu option');
+
   /* ---- challenge and accept -------------------------------------- */
 
   await host.evaluate(() => {
@@ -246,6 +273,72 @@ try {
     6000,
   );
   note(latencyShown !== null, 'round trip is measured and displayed', latencyShown + 'ms');
+
+  /* ---- the guest can step, and the host is the one moving it ----- */
+
+  /**
+   * The guest draws nothing of its own: every pixel of that archer came off a
+   * snapshot. So seeing its own archer move on its own screen is proof of the
+   * whole path — keypress, relay, the host applying the step to the archer it
+   * simulates, and the frame coming back.
+   */
+  /**
+   * Walks an archer to one edge of its platform, then to the other, and reports
+   * how far the stance moved between them.
+   *
+   * Reading the stance is the awkward part: the archer swings through a wide arc
+   * on its own, and full leans come anywhere from 1.7 to 7.2 seconds apart, so
+   * any short window reads that arc as movement. What is stable is the leftmost
+   * point of a lean — the arc has the same width wherever the archer stands, so
+   * the *difference* between two windows' minima is the stance difference and
+   * the lean cancels out. Pinning against both edges then makes the signal the
+   * full usable width of the platform, several times the noise left over.
+   */
+  const traverse = async (page, second, label) => {
+    const leftmost = async () => {
+      await page.evaluate(() => {
+        window.__x = [];
+      });
+      await wait(5000);
+      return page.evaluate((takeSecond) => {
+        const mine = window.__x.filter((_, i) => (i % 2 === 1) === takeSecond);
+        return mine.length ? Math.min(...mine) : null;
+      }, second);
+    };
+    const press = async (key, times) => {
+      for (let i = 0; i < times; i++) {
+        await page.keyboard.press(key);
+        await wait(420);
+      }
+    };
+
+    await press('ArrowLeft', 6);
+    const atLeft = await leftmost();
+    await press('ArrowRight', 12);
+    const atRight = await leftmost();
+    if (atLeft === null || atRight === null) return null;
+    void label;
+    return atRight - atLeft;
+  };
+
+  // The guest draws nothing of its own, so its archer moving on its own screen
+  // is the whole path proven: keypress, relay, the host stepping the archer it
+  // simulates, and the frame coming back.
+  const guestTravel = await traverse(guest, true, 'guest');
+  note(
+    guestTravel !== null && guestTravel > 55,
+    'a sidestep on the guest is carried out by the host and comes back',
+    guestTravel === null ? 'no archer sampled' : guestTravel.toFixed(0) + 'px across the platform',
+  );
+  await guest.screenshot({ path: resolve(outDir, '23c-guest-stepped.png') });
+
+  // The host never turned the option on, so the same keys must do nothing.
+  const hostTravel = await traverse(host, false, 'host');
+  note(
+    hostTravel !== null && Math.abs(hostTravel) < 55,
+    'and the player who left the option off does not move',
+    hostTravel === null ? 'no archer sampled' : Math.abs(hostTravel).toFixed(0) + 'px of drift',
+  );
 
   /* ---- a stalled host is explained, not just frozen -------------- */
 

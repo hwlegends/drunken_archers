@@ -108,6 +108,12 @@ export type MatchMessage =
    */
   | { k: 'in'; down: boolean; at: number }
   /**
+   * Guest: a sidestep. Unlike a shot this needs no rewinding — a step changes
+   * where the archer will be from now on rather than resolving an instant, so
+   * the host simply applies it when it arrives.
+   */
+  | { k: 'step'; dir: -1 | 1 }
+  /**
    * Guest: "I am here, tell me where we are." Both browsers build their engine
    * at the same moment, so whichever spoke first may have spoken to nobody.
    * The guest repeats this until an arena arrives, which also recovers a guest

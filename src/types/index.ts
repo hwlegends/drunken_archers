@@ -150,6 +150,21 @@ export interface RagdollHandle {
   hipOffset: Vec2;
   /** True while the archer is on its feet and being posed. */
   standing: boolean;
+  /**
+   * The optional sidestep, in pose space.
+   *
+   * A standing archer is placed relative to `pivot`, so a step is simply that
+   * point travelling — the whole body follows it without anything being solved
+   * for, and it cannot destabilise the way a shove would.
+   */
+  stepFromX: number;
+  stepToX: number;
+  /** ms into the current step, or -1 when the archer is not mid-step. */
+  stepElapsed: number;
+  /** ms until another step may begin. */
+  stepCooldown: number;
+  /** How far the feet may travel: the usable width of the platform below. */
+  stepBounds: { minX: number; maxX: number };
   /** Accumulated destabilisation from hits; at 1 the archer loses its footing. */
   balanceLoss: number;
   collisionGroup: number;
@@ -245,6 +260,11 @@ export interface GameSettings {
   sfx: boolean;
   /** Substitutes a neutral dust burst for the blood effect. */
   reducedBlood: boolean;
+  /**
+   * Lets this player nudge their archer a fixed distance along its platform.
+   * Off by default: the duel is built around a wobble you cannot control.
+   */
+  sidestep: boolean;
 }
 
 export interface PersistentStats {

@@ -22,6 +22,14 @@ const HINTS: Record<GameMode, string> = {
   online: 'Hold ↑ or press and hold the arena · release to fire',
 };
 
+/** Only shown while the option is on, since the keys do nothing otherwise. */
+const STEP_HINTS: Record<GameMode, string> = {
+  onePlayer: '← → to step',
+  twoPlayers: 'Blue: A D · Orange: ← →',
+  deathmatch: '← → to step',
+  online: '← → to step',
+};
+
 /**
  * Score, run counters and the pause button. Health bars are drawn on the canvas
  * above each archer, which keeps their per-frame positions out of React.
@@ -30,6 +38,7 @@ export function HUD({ mode, onPause, showHint, opponent, latency, stalled }: HUD
   const scores = useGameStore((s) => s.scores);
   const deathmatchScore = useGameStore((s) => s.deathmatchScore);
   const best = useGameStore((s) => s.stats.bestDeathmatchScore);
+  const sidestep = useGameStore((s) => s.settings.sidestep);
   const online = mode === 'online';
 
   return (
@@ -96,7 +105,12 @@ export function HUD({ mode, onPause, showHint, opponent, latency, stalled }: HUD
         </div>
       )}
 
-      {showHint && !stalled && <div className="hud__hint">{HINTS[mode]}</div>}
+      {showHint && !stalled && (
+        <div className="hud__hint">
+          {HINTS[mode]}
+          {sidestep ? ' · ' + STEP_HINTS[mode] : ''}
+        </div>
+      )}
 
       <Announcements />
     </div>

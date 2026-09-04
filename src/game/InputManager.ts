@@ -3,6 +3,8 @@ import type { GameMode, Side } from '../types';
 export interface InputHandlers {
   onPress: (side: Side) => void;
   onRelease: (side: Side) => void;
+  /** One sidestep: -1 for left, +1 for right. Only when the option is on. */
+  onStep: (side: Side, direction: -1 | 1) => void;
   onPauseToggle: () => void;
 }
 
@@ -24,6 +26,29 @@ const KEY_BINDINGS: Record<Exclude<GameMode, 'online'>, Record<string, Side>> = 
  * whether the pairing handed them blue or orange.
  */
 const ONLINE_KEYS = new Set(['ArrowUp', 'KeyW', 'Space']);
+
+/**
+ * Sidestep keys, when the option is on. They are kept clear of the draw keys so
+ * that turning the option on cannot change how firing works.
+ */
+const STEP_BINDINGS: Record<Exclude<GameMode, 'online'>, Record<string, [Side, -1 | 1]>> = {
+  onePlayer: { ArrowLeft: ['left', -1], ArrowRight: ['left', 1] },
+  twoPlayers: {
+    KeyA: ['left', -1],
+    KeyD: ['left', 1],
+    ArrowLeft: ['right', -1],
+    ArrowRight: ['right', 1],
+  },
+  deathmatch: { ArrowLeft: ['left', -1], ArrowRight: ['left', 1] },
+};
+
+/** Online drives one archer, so either pair of keys steps it. */
+const ONLINE_STEP_KEYS: Record<string, -1 | 1> = {
+  ArrowLeft: -1,
+  ArrowRight: 1,
+  KeyA: -1,
+  KeyD: 1,
+};
 
 const PAUSE_KEYS = new Set(['Escape', 'KeyP']);
 
@@ -107,6 +132,15 @@ export class InputManager {
     return KEY_BINDINGS[this.mode][code];
   }
 
+  /** The archer and direction a key steps, if it is a step key here. */
+  private stepForKey(code: string): [Side, -1 | 1] | undefined {
+    if (this.mode === 'online') {
+      const direction = ONLINE_STEP_KEYS[code];
+      return direction ? [this.localSide, direction] : undefined;
+    }
+    return STEP_BINDINGS[this.mode][code];
+  }
+
   /** Gameplay-only gate. Disabling also drops anything currently held. */
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return;
@@ -132,8 +166,17 @@ export class InputManager {
       return;
     }
     if (!this.enabled) return;
-    // Ignore auto-repeat: a held key must not restart the draw every tick.
+    // Ignore auto-repeat: a held key must not restart the draw every tick, and
+    // a held step key must not walk the archer across the platform.
     if (event.repeat || this.heldKeys.has(event.code)) return;
+
+    // A step is one discrete move per press, so it never enters `held`.
+    const step = this.stepForKey(event.code);
+    if (step) {
+      event.preventDefault();
+      this.handlers.onStep(step[0], step[1]);
+      return;
+    }
 
     const side = this.sideForKey(event.code);
     if (!side) return;

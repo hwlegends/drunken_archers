@@ -13,6 +13,7 @@ const TOGGLES: Array<{ key: keyof GameSettings; label: string; on: string; off: 
   { key: 'music', label: 'Music', on: '♪', off: '✕' },
   { key: 'sfx', label: 'Sound', on: '♫', off: '✕' },
   { key: 'reducedBlood', label: 'Reduced blood', on: '✓', off: '✕' },
+  { key: 'sidestep', label: 'Sidestep', on: '⇄', off: '✕' },
 ];
 
 export function MainMenu({ onStart, onHowToPlay, onFullscreen, isFullscreen }: MainMenuProps) {

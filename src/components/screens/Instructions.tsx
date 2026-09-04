@@ -32,6 +32,14 @@ export function Instructions({ onClose }: { onClose: () => void }) {
             </span>
           </div>
           <div className="howto__item">
+            <span className="kbd">← →</span>
+            <span>
+              <b>Sidestep</b>, if you switch it on in the menu. One press shifts you a short fixed
+              distance along your platform, and it will not carry you off the edge. Two Players
+              uses <b>A</b> and <b>D</b> for blue.
+            </span>
+          </div>
+          <div className="howto__item">
             <span className="kbd">Esc</span>
             <span>
               <b>Pause.</b>

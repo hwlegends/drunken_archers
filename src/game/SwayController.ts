@@ -1,5 +1,5 @@
 import Matter from 'matter-js';
-import { RAGDOLL } from '../config/constants';
+import { RAGDOLL, STEP } from '../config/constants';
 import type { RagdollHandle } from '../types';
 
 /**
@@ -54,6 +54,55 @@ export class SwayController {
     if (handle.balanceLoss > 0) {
       handle.balanceLoss = Math.max(0, handle.balanceLoss - RAGDOLL.toppleRecoveryPerSecond * dt);
     }
+
+    this.advanceStep(handle, stepMs);
+  }
+
+  /**
+   * Carries a sidestep along, if one is running.
+   *
+   * The pivot is what every standing part is placed relative to, so moving it is
+   * the whole of the move: the body travels as one piece and the legs are re-laid
+   * along the way by the pose, exactly as they are when the archer leans. Nothing
+   * is pushed, so nothing can be knocked out of balance by stepping.
+   */
+  private advanceStep(handle: RagdollHandle, stepMs: number): void {
+    if (handle.stepCooldown > 0) {
+      handle.stepCooldown = Math.max(0, handle.stepCooldown - stepMs);
+    }
+    if (handle.stepElapsed < 0) return;
+
+    handle.stepElapsed += stepMs;
+    const progress = Math.min(1, handle.stepElapsed / STEP.durationMs);
+    // Eased out: the foot leaves quickly and settles, which reads as a step
+    // rather than the archer being slid along on ice.
+    const eased = 1 - (1 - progress) * (1 - progress);
+    handle.pivot.x = handle.stepFromX + (handle.stepToX - handle.stepFromX) * eased;
+
+    if (progress >= 1) handle.stepElapsed = -1;
+  }
+
+  /**
+   * Starts a sidestep. Returns false if the archer cannot take one — already
+   * mid-step, still on cooldown, off its feet, or out of platform.
+   */
+  static step(handle: RagdollHandle, direction: -1 | 1): boolean {
+    if (!handle.standing || handle.dead) return false;
+    if (handle.stepElapsed >= 0 || handle.stepCooldown > 0) return false;
+
+    const from = handle.pivot.x;
+    const to = Math.max(
+      handle.stepBounds.minX,
+      Math.min(handle.stepBounds.maxX, from + direction * STEP.distance),
+    );
+    // Already against the edge: refuse rather than burn the cooldown on nothing.
+    if (Math.abs(to - from) < 0.5) return false;
+
+    handle.stepFromX = from;
+    handle.stepToX = to;
+    handle.stepElapsed = 0;
+    handle.stepCooldown = STEP.cooldownMs;
+    return true;
   }
 
   /**
@@ -192,6 +241,8 @@ export class SwayController {
   static releaseRagdoll(handle: RagdollHandle): void {
     if (!handle.standing) return;
     handle.standing = false;
+    // A step in progress is pose-space motion, and there is no pose any more.
+    handle.stepElapsed = -1;
     for (const { constraint, stiffness, damping } of handle.joints) {
       constraint.stiffness = stiffness;
       constraint.damping = damping;

@@ -290,6 +290,13 @@ export class RagdollFactory {
       restPose,
       hipOffset,
       standing: true,
+      stepFromX: pivot.x,
+      stepToX: pivot.x,
+      stepElapsed: -1,
+      stepCooldown: 0,
+      // Unbounded until an arena narrows it; a ragdoll built outside a match
+      // has no platform to stay on.
+      stepBounds: { minX: -Infinity, maxX: Infinity },
       balanceLoss: 0,
       collisionGroup: group,
       regionOf,

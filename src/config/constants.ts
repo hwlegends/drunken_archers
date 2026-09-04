@@ -189,6 +189,28 @@ export const RAGDOLL = {
 
 } as const;
 
+/**
+ * The optional sidestep: one press shifts an archer a fixed distance along its
+ * platform.
+ *
+ * It is off by default and deliberately small. The game is reading a wobble you
+ * cannot control, so being able to slide freely would undo it; a short step on a
+ * cooldown lets a player break up an opponent's ranging without giving them a
+ * way to simply walk out of the line of fire. Platforms are 125 to 205 px wide
+ * and the archer starts in the middle, so this is one step each way on the
+ * narrowest and two on the widest.
+ */
+export const STEP = {
+  /** How far one press carries the archer, in logical px. */
+  distance: 30,
+  /** ms the glide takes. Long enough to read as a step, short enough to dodge. */
+  durationMs: 170,
+  /** ms before another step may begin, measured from the last one starting. */
+  cooldownMs: 300,
+  /** The feet stay this far inside the platform edge. */
+  edgeMargin: 26,
+} as const;
+
 export const MATCH = {
   targetScore: 5,
   /** ms the round-result overlay holds before the next round. */
